@@ -1,6 +1,6 @@
 defaults:
   - _self_
-  - task: blockpush_lowdim_seed
+  - task: first_arm_lowdim
 
 name: train_diffusion_transformer_lowdim
 _target_: diffusion_policy.workspace.train_diffusion_transformer_lowdim_workspace.TrainDiffusionTransformerLowdimWorkspace
@@ -10,9 +10,9 @@ action_dim: ${task.action_dim}
 task_name: ${task.name}
 exp_name: "default"
 
-horizon: 5
-n_obs_steps: 3
-n_action_steps: 1
+horizon: 16
+n_obs_steps: 2
+n_action_steps: 8
 n_latency_steps: 0
 past_action_visible: False
 keypoint_visible_rate: 1.0
@@ -99,13 +99,13 @@ training:
   lr_scheduler: cosine
   # Transformer needs LR warmup
   lr_warmup_steps: 1000
-  num_epochs: 5000
+  num_epochs: 1000
   gradient_accumulate_every: 1
   use_ema: True
   # training loop control
   # in epochs
   rollout_every: 50
-  checkpoint_every: 50
+  checkpoint_every: 200
   val_every: 1
   sample_every: 5
   # steps per epoch
@@ -125,10 +125,10 @@ logging:
 
 checkpoint:
   topk:
-    monitor_key: test_mean_score
-    mode: max
+    monitor_key: val_loss
+    mode: min
     k: 5
-    format_str: 'epoch={epoch:04d}-test_mean_score={test_mean_score:.3f}.ckpt'
+    format_str: 'epoch={epoch:04d}-val_loss={val_loss:.3f}.ckpt'
   save_last_ckpt: True
   save_last_snapshot: False
 
