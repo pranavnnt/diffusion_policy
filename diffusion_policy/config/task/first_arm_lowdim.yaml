@@ -1,0 +1,17 @@
+name: first_arm_env_lowdim
+
+obs_dim: 31
+action_dim: 3
+keypoint_dim: 0
+obs_eef_target: False
+
+dataset:
+  _target_: diffusion_policy.dataset.first_arm_lowdim_dataset.FirstArmLowdimDataset
+  zarr_path: diffusion_policy/data/first_arm_scene/seed0_combined.zarr
+  horizon: ${horizon}
+  pad_before: ${eval:'${n_obs_steps}-1'}
+  pad_after: ${eval:'${n_action_steps}-1'}
+  obs_eef_target: ${task.obs_eef_target}
+  use_manual_normalizer: False
+  seed: 42
+  val_ratio: 0.02
