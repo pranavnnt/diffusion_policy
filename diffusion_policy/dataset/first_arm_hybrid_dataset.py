@@ -31,8 +31,7 @@ class FirstArmHybridDataset(BaseImageDataset):
             val_ratio=0.0
             ):
         super().__init__()
-        self.replay_buffer = ReplayBuffer.copy_from_path(
-            zarr_path, keys=[obs_key, state_key, action_key])
+        self.replay_buffer = ReplayBuffer.create_from_path(zarr_path, mode='r')
 
         val_mask = get_val_mask(
             n_episodes=self.replay_buffer.n_episodes, 
@@ -84,9 +83,6 @@ class FirstArmHybridDataset(BaseImageDataset):
             'state': state
         }
 
-        # Only keep obs + action for normalization
-        data = {k: v for k, v in data.items()}
-
         normalizer = LinearNormalizer()
         normalizer.fit(data=data, last_n_dims=1, mode=mode, **kwargs)
         normalizer["image"] = get_image_range_normalizer()
@@ -99,20 +95,20 @@ class FirstArmHybridDataset(BaseImageDataset):
         return len(self.sampler)
 
     def _sample_to_data(self, sample):
-        obs = sample[self.obs_key][...].astype(np.float32)        # (T, 37)
-        act = sample[self.action_key][...].astype(np.float32)     # (T, 3)
-        img = sample[self.img_key][...].astype(np.float32)        # already (T, 3, 128, 128)
-
-        obs_trimmed = np.concatenate([obs[:, :18], obs[:, 24:]], axis=1).astype(np.float32)
-
-        data = {
+        obs = sample[self.obs_key][...].astype(np.float32)   # (T, 37)
+        act = sample[self.action_key][...].astype(np.float32)  # (T, 3)
+        img = sample[self.img_key][...].astype(np.float32) / 255.0  # (T, 3, 128, 128)
+        
+        # trim forearm/backarm dims
+        obs_trimmed = np.concatenate([obs[:, :18], obs[:, 24:]], axis=1)
+    
+        return {
             'obs': {
-                self.img_key: img.astype(np.float32) / 255.0,  # normalize, no resize
+                self.img_key: img,
                 self.obs_key: obs_trimmed,
             },
-            self.action_key: act.astype(np.float32)
+            self.action_key: act
         }
-        return data
 
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
         sample = self.sampler.sample_sequence(idx)
