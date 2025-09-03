@@ -1,0 +1,24 @@
+name: first_arm_hybrid
+
+shape_meta:
+  obs:
+    state:
+      shape: [31]
+      type: low_dim
+    image:
+      shape: [3, 128, 128]
+      type: rgb
+  action:
+    shape: [3]
+obs_eef_target: False
+
+dataset:
+  _target_: diffusion_policy.dataset.first_arm_hybrid_dataset.FirstArmHybridDataset
+  zarr_path: diffusion_policy/data/first_arm_scene/seed0_combined.zarr
+  horizon: ${horizon}
+  pad_before: ${eval:'${n_obs_steps}-1'}
+  pad_after: ${eval:'${n_action_steps}-1'}
+  obs_eef_target: ${task.obs_eef_target}
+  use_manual_normalizer: False
+  seed: 42
+  val_ratio: 0.1
