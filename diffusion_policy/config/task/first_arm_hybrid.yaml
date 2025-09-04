@@ -3,7 +3,7 @@ name: first_arm_hybrid
 shape_meta:
   obs:
     state:
-      shape: [31]
+      shape: [10]
       type: low_dim
     image:
       shape: [3, 128, 128]

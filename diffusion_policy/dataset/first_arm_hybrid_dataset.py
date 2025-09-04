@@ -76,7 +76,7 @@ class FirstArmHybridDataset(BaseImageDataset):
         # Sample data dict
         
         state = self.replay_buffer['state']
-        state = np.concatenate([state[:, :18], state[:, 24:]], axis=1).astype(np.float32)
+        state = np.concatenate([state[:, :6], state[:, 7:11]], axis=1).astype(np.float32)
         
         data = {
             'action': self.replay_buffer['action'],
@@ -100,7 +100,7 @@ class FirstArmHybridDataset(BaseImageDataset):
         img = sample[self.img_key][...].astype(np.float32) / 255.0  # (T, 3, 128, 128)
         
         # trim forearm/backarm dims
-        obs_trimmed = np.concatenate([obs[:, :18], obs[:, 24:]], axis=1)
+        obs_trimmed = np.concatenate([obs[:, :6], obs[:, 7:11]], axis=1)
     
         return {
             'obs': {
