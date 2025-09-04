@@ -92,7 +92,7 @@ training:
   lr_scheduler: cosine
   # Transformer needs LR warmup
   lr_warmup_steps: 1000
-  num_epochs: 200
+  num_epochs: 100
   gradient_accumulate_every: 1
   # EMA destroys performance when used with BatchNorm
   # replace BatchNorm with GroupNorm.
@@ -100,7 +100,7 @@ training:
   # training loop control
   # in epochs
   rollout_every: 50
-  checkpoint_every: 200
+  checkpoint_every: 50
   val_every: 1
   sample_every: 5
   # steps per epoch
