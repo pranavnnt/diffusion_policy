@@ -26,7 +26,9 @@ class FirstArmHybridDataset(BaseImageDataset):
             obs_eef_target=False,
             action_key='action',
             img_key='image',
+            depth_key='depth',
             use_manual_normalizer=False,
+            modalities=['rgb', 'pos', 'vel', 'force', 'depth'],
             seed=42,
             val_ratio=0.0
             ):
@@ -49,16 +51,20 @@ class FirstArmHybridDataset(BaseImageDataset):
         self.obs_key = obs_key
         self.action_key = action_key
         self.img_key = img_key
+        self.depth_key = depth_key
         self.use_manual_normalizer = use_manual_normalizer
         self.train_mask = train_mask
         self.obs_eef_target = obs_eef_target
         self.horizon = horizon
         self.pad_before = pad_before
         self.pad_after = pad_after
+        self.modalities = modalities
+        
+        assert "rgb" in self.modalities, "rgb modality is required"
         
         print("FirstArmHybridDataset initialized.")
-        print("Code set up to take obs dim 37, filter out states to return state with obs dim 33")
-        print("(removing position of forearm and backarm from state)")
+        print("Code set up to take obs dim 37, remove arm states to return privileged state with obs dim 31")
+        print("Actual state (without privileged information) varies, depending on modalities chosen.")
 
     def get_validation_dataset(self):
         val_set = copy.copy(self)
@@ -75,11 +81,11 @@ class FirstArmHybridDataset(BaseImageDataset):
     def get_normalizer(self, mode='limits', **kwargs):
         # Sample data dict
         
-        state = self.replay_buffer['state']
-        state = np.concatenate([state[:, :6], state[:, 7:11]], axis=1).astype(np.float32)
+        state = self.replay_buffer[self.obs_key]
+        state = self._filter_obs(state)
         
         data = {
-            'action': self.replay_buffer['action'],
+            'action': self.replay_buffer[self.action_key],
             'state': state
         }
 
@@ -93,19 +99,46 @@ class FirstArmHybridDataset(BaseImageDataset):
 
     def __len__(self) -> int:
         return len(self.sampler)
+    
+    def _filter_obs(self, obs):
+        
+        pos = obs[:, :3]
+        vel = obs[:, 3:6]
+        force = obs[:, 7:11]
+        
+        obs_filtered = []
+        if 'pos' in self.modalities:
+            obs_filtered.append(pos)
+        if 'vel' in self.modalities:
+            obs_filtered.append(vel)
+        if 'force' in self.modalities:
+            obs_filtered.append(force)
+        
+        assert len(obs_filtered) > 0, "At least one of pos, vel, force must be in modalities (for now!)"
+        obs_filtered = np.concatenate(obs_filtered, axis=1)
+        
+        return obs_filtered
 
     def _sample_to_data(self, sample):
-        obs = sample[self.obs_key][...].astype(np.float32)   # (T, 37)
-        act = sample[self.action_key][...].astype(np.float32)  # (T, 3)
-        img = sample[self.img_key][...].astype(np.float32) / 255.0  # (T, 3, 128, 128)
+        obs   = sample[self.obs_key][...].astype(np.float32)   # (T, 37)
+        act   = sample[self.action_key][...].astype(np.float32)  # (T, 3)
+        img   = sample[self.img_key][...].astype(np.float32) / 255.0  # (T, 3, 128, 128)
+        depth = sample[self.depth_key][...].astype(np.float32)     # (T, 1, 128, 128)    
         
-        # trim forearm/backarm dims
-        obs_trimmed = np.concatenate([obs[:, :6], obs[:, 7:11]], axis=1)
-    
+        assert depth.min() >= 0.0 and depth.max() <= 1.0, "Depth should be already be normalized to [0, 1]"
+        
+        # trim full privileged state info based on modalities
+        obs_filtered = self._filter_obs(obs)  # dimension of axis 1 varies based on modalities
+        
+        if "depth" in self.modalities:
+            output_img = np.concatenate([img, depth], axis=1)
+        else:
+            output_img = img
+        
         return {
             'obs': {
-                self.img_key: img,
-                self.obs_key: obs_trimmed,
+                self.img_key: output_img,
+                self.obs_key: obs_filtered,
             },
             self.action_key: act
         }
