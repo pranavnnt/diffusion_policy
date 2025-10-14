@@ -60,6 +60,8 @@ class FirstArmHybridDataset(BaseImageDataset):
         self.pad_after = pad_after
         self.modalities = modalities
         
+        print("Modalities used for training: ", self.modalities)
+        
         assert "rgb" in self.modalities, "rgb modality is required"
         
         print("FirstArmHybridDataset initialized.")
