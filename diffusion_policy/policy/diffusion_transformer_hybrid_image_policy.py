@@ -49,7 +49,8 @@ class DiffusionTransformerHybridImagePolicy(BaseImagePolicy):
 
         # parse shape_meta
         action_shape = shape_meta['action']['shape']
-        assert len(action_shape) == 1
+        print("Here?")
+        assert len(action_shape) == 1, "Error in action shape, expected 1D shape"
         action_dim = action_shape[0]
         obs_shape_meta = shape_meta['obs']
         obs_config = {
@@ -59,6 +60,7 @@ class DiffusionTransformerHybridImagePolicy(BaseImagePolicy):
             'scan': []
         }
         obs_key_shapes = dict()
+        print("obs_shape_meta:", obs_shape_meta)
         for key, attr in obs_shape_meta.items():
             shape = attr['shape']
             obs_key_shapes[key] = list(shape)
@@ -132,7 +134,7 @@ class DiffusionTransformerHybridImagePolicy(BaseImagePolicy):
                     pos_enc=x.pos_enc
                 )
             )
-
+                
         # create diffusion model
         obs_feature_dim = obs_encoder.output_shape()[0]
         input_dim = action_dim if obs_as_cond else (obs_feature_dim + action_dim)
@@ -313,7 +315,7 @@ class DiffusionTransformerHybridImagePolicy(BaseImagePolicy):
 
     def compute_loss(self, batch):
         # normalize input
-        assert 'valid_mask' not in batch
+        assert 'valid_mask' not in batch, "valid_mask not supported in this policy"
         nobs = self.normalizer.normalize(batch['obs'])
         nactions = self.normalizer['action'].normalize(batch['action'])
         batch_size = nactions.shape[0]

@@ -84,7 +84,7 @@ class FirstArmLowdimDataset(BaseLowdimDataset):
         
         obs_trimmed = obs_trimmed = np.concatenate([obs[:, :18], obs[:, 24:]], axis=1)
          # Remove forearm and backarm position from state
-        assert obs_trimmed.shape[1] == 31, f"Expected trimmed obs to have 33 dimensions, got {obs_trimmed.shape[1]}"
+        assert obs_trimmed.shape[1] == 31, f"Expected trimmed obs to have 31 dimensions, got {obs_trimmed.shape[1]}"
         
         return {
             'obs':    obs_trimmed,
