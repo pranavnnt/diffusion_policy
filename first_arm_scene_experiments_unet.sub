@@ -8,7 +8,7 @@
 #SBATCH --requeue
 #SBATCH --mem=48G
 #SBATCH -t 30:00:00
-#SBATCH --partition=gpu
+#SBATCH --nodelist=bhattacharjee-compute-02
 #SBATCH --get-user-env
 #SBATCH --gres=gpu:nvidia_rtx_6000_ada_generation:1
 #SBATCH --exclude=galhotra-compute-01,thickstun-compute-01
@@ -29,34 +29,18 @@ mkdir -p /scratch/$USER/slurm_logs
 
 # -------------------- DEFINE MODALITIES + NAMES --------------------
 MODALITIES_LIST=(
-  ["pos","vel","force"]
-  ["rgb","pos","vel","force"]
-  ["rgb","pos","vel"]
-  ["rgb","pos"]
-  ["rgb","force"]
+  ["rgb","pos","vel","force","depth"]
 )
 
 NAMES_LIST=(
-  "uncropped_full_dataset_pos_vel_force"
-  "uncropped_full_dataset_rgb_pos_vel_force"
-  "uncropped_full_dataset_rgb_pos_vel"
-  "uncropped_full_dataset_rgb_pos"
-  "uncropped_full_dataset_rgb_force"
+  "unet_uncropped_full_dataset_rgbd_pos_vel_force"
 )
 
 STATE_SHAPE_LIST=(
   [10]
-  [10]
-  [6]
-  [3]
-  [4]
 )
 IMAGE_SHAPE_LIST=(
   [4,128,128]
-  [3,128,128]
-  [3,128,128]
-  [3,128,128]
-  [3,128,128]
 )
 
 MODALITIES=${MODALITIES_LIST[$SLURM_ARRAY_TASK_ID]}
@@ -93,7 +77,7 @@ echo "Working directory: $(pwd)"
 # -------------------- TRAINING COMMAND --------------------
 
 python train.py \
-  --config-name=train_diffusion_transformer_hybrid_workspace \
+  --config-name=train_diffusion_unet_hybrid_workspace \
   name=${RUN_NAME} \
   task.dataset.modalities=${MODALITIES} \
   hydra.job.num=${SLURM_ARRAY_TASK_ID} \
