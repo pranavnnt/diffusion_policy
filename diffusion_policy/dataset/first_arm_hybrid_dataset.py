@@ -62,8 +62,6 @@ class FirstArmHybridDataset(BaseImageDataset):
         
         print("Modalities used for training: ", self.modalities)
         
-        assert "rgb" in self.modalities, "rgb modality is required"
-        
         print("FirstArmHybridDataset initialized.")
         print("Code set up to take obs dim 37, remove arm states to return privileged state with obs dim 31")
         print("Actual state (without privileged information) varies, depending on modalities chosen.")
@@ -132,18 +130,26 @@ class FirstArmHybridDataset(BaseImageDataset):
         # trim full privileged state info based on modalities
         obs_filtered = self._filter_obs(obs)  # dimension of axis 1 varies based on modalities
         
-        if "depth" in self.modalities:
-            output_img = np.concatenate([img, depth], axis=1)
+        if "rgb" in self.modalities:
+            if "depth" in self.modalities:
+                output_img = np.concatenate([img, depth], axis=1)
+            else:
+                output_img = img
+
+            return {
+                'obs': {
+                    self.img_key: output_img,
+                    self.obs_key: obs_filtered,
+                },
+                self.action_key: act
+            }
         else:
-            output_img = img
-        
-        return {
-            'obs': {
-                self.img_key: output_img,
-                self.obs_key: obs_filtered,
-            },
-            self.action_key: act
-        }
+            return {
+                'obs': {
+                    self.obs_key: obs_filtered,
+                },
+                self.action_key: act
+            }
 
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
         sample = self.sampler.sample_sequence(idx)
