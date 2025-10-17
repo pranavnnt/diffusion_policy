@@ -77,6 +77,9 @@ val_dataloader:
   pin_memory: True
   persistent_workers: True
 
+eval:
+  ckpt: /home/pranavnnt/workspace/dressing_sim_ws/dressing_policies/weights/uncropped_full_dataset_rgbd_pos_vel_force_first_arm_hybrid.0_2025-10-14_19-18-16/checkpoints/latest.ckpt
+
 optimizer:
   transformer_weight_decay: 1.0e-3
   obs_encoder_weight_decay: 1.0e-6
@@ -135,5 +138,4 @@ hydra:
   job:
     override_dirname: ${name}
   run:
-    # dir: data/outputs/${now:%Y.%m.%d}_${now:%H.%M.%S}_${name}_${task_name}
-    dir: "data/outputs/${name}_${task_name}.${hydra.job.num}_${now:%Y-%m-%d_%H-%M-%S}"
+    dir: "data/outputs/${name}_${task_name}_${now:%Y-%m-%d_%H-%M-%S}"
