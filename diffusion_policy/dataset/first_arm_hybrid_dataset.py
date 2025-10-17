@@ -151,3 +151,46 @@ class FirstArmHybridDataset(BaseImageDataset):
 
         torch_data = dict_apply(data, torch.from_numpy)
         return torch_data
+    
+    def get_shape_meta(self):
+        obs_shape = self._filter_obs(self.replay_buffer[self.obs_key][:1]).shape[-1]
+        img = self.replay_buffer[self.img_key][0]
+        depth = self.replay_buffer[self.depth_key][0]
+        img_shape = img.shape if "depth" not in self.modalities else (img.shape[0] + depth.shape[0], *img.shape[1:])
+        return {
+            "obs": {
+                "state": {"shape": (obs_shape,)},
+                "image": {"shape": img_shape},
+            },
+            "action": {"shape": self.replay_buffer[self.action_key][0].shape},
+        }
+
+    def preprocess_obs(self, sample):
+        """Process a single Unity observation dict into tensors."""
+        img = sample[self.img_key]          # RGB
+        depth = sample.get(self.depth_key, None)
+        obs = sample[self.obs_key]
+    
+        # --- Ensure CHW format ---
+        if img.ndim == 3 and img.shape[0] != 3:
+            img = img.transpose(2, 0, 1)
+        if depth is not None and depth.ndim == 2:
+            depth = depth[None, :, :]
+    
+        # --- Combine RGB + Depth ---
+        if "depth" in self.modalities:
+            output_img = np.concatenate([img, depth], axis=0)
+        else:
+            output_img = img
+    
+        # --- Resize & normalize ---
+        output_img = cv2.resize(output_img.transpose(1, 2, 0), (128, 128), interpolation=cv2.INTER_AREA)
+        output_img = output_img.transpose(2, 0, 1).astype(np.float32) / 255.0
+    
+        # --- Filter obs (state) ---
+        obs_filtered = self._filter_obs(np.array(obs)[None, :])[0]
+    
+        return {
+            "state": torch.from_numpy(obs_filtered).float(),
+            "image": torch.from_numpy(output_img).float(),
+        }
