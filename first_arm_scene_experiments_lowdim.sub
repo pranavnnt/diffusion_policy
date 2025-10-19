@@ -12,7 +12,7 @@
 #SBATCH --get-user-env
 #SBATCH --gres=gpu:nvidia_rtx_6000_ada_generation:1
 #SBATCH --exclude=galhotra-compute-01,thickstun-compute-01
-#SBATCH --array=0
+#SBATCH --array=0-6
 
 export SLURM_ARRAY_TASK_ID=${SLURM_ARRAY_TASK_ID:-0}
 export HYDRA_FULL_ERROR=1
@@ -27,45 +27,23 @@ conda activate robodiff
 # Ensure log + scratch directories exist
 mkdir -p /scratch/$USER/slurm_logs
 
-# -------------------- DEFINE MODALITIES + NAMES --------------------
-MODALITIES_LIST=(
-  ["pos","vel","force"]
-  ["rgb","pos","vel","force"]
-  ["rgb","pos","vel"]
-  ["rgb","pos"]
-  ["rgb","force"]
-)
+# -------------------- DEFINE NAMES --------------------
 
 NAMES_LIST=(
-  "uncropped_full_dataset_pos_vel_force"
-  "uncropped_full_dataset_rgb_pos_vel_force"
-  "uncropped_full_dataset_rgb_pos_vel"
-  "uncropped_full_dataset_rgb_pos"
-  "uncropped_full_dataset_rgb_force"
+  "lowdim_uncropped_dataset_0_rgbd_pos_vel_force"
+  "lowdim_uncropped_dataset_1_rgbd_pos_vel_force"
+  "lowdim_uncropped_dataset_2_rgbd_pos_vel_force"
+  "lowdim_uncropped_dataset_3_rgbd_pos_vel_force"
+  "lowdim_uncropped_dataset_5_rgbd_pos_vel_force"
+  "lowdim_uncropped_dataset_6_rgbd_pos_vel_force"
+  "lowdim_uncropped_dataset_7_rgbd_pos_vel_force"
 )
 
-STATE_SHAPE_LIST=(
-  [10]
-  [10]
-  [6]
-  [3]
-  [4]
-)
-IMAGE_SHAPE_LIST=(
-  [4,128,128]
-  [3,128,128]
-  [3,128,128]
-  [3,128,128]
-  [3,128,128]
-)
-
-MODALITIES=${MODALITIES_LIST[$SLURM_ARRAY_TASK_ID]}
 RUN_NAME=${NAMES_LIST[$SLURM_ARRAY_TASK_ID]}
-STATE_SHAPE=${STATE_SHAPE_LIST[$SLURM_ARRAY_TASK_ID]}
-IMAGE_SHAPE=${IMAGE_SHAPE_LIST[$SLURM_ARRAY_TASK_ID]}
 
-echo "Selected modalities: ${MODALITIES}"
 echo "Run name: ${RUN_NAME}"
+
+DATASET_NAME="depth_halton_n8_0123567_50_compressed.zarr"
 
 # -------------------- STAGE DATA TO SCRATCH --------------------
 DATA_SRC=~/workspace/dressing_sim_ws/diffusion_policy/diffusion_policy/data/first_arm_scene
@@ -75,17 +53,17 @@ OUTPUT_DST=~/workspace/dressing_sim_ws/diffusion_policy/data/outputs/${RUN_NAME}
 # create output folder if missing
 mkdir -p "$(dirname ${OUTPUT_DST})"
 
-ZARR_FILE="${DATA_DST}/depth_halton_n8_0123567_50_compressed.zarr"
+ZARR_FILE="${DATA_DST}/${DATASET_NAME}"
+echo "Zarr file path: ${ZARR_FILE}"
 
-# check if dataset folder or main .zarr file missing
-if [ ! -d "${DATA_DST}" ] || [ ! -e "${ZARR_FILE}" ]; then
-    echo "📦 Dataset missing (folder or file not found). Copying from ${DATA_SRC}..."
-    mkdir -p "${DATA_DST}"
-    rsync -a "${DATA_SRC}/" "${DATA_DST}/"
-    echo "✅ Dataset copied to ${DATA_DST}"
-else
-    echo "✅ Dataset and .zarr file already exist at ${DATA_DST}, skipping copy."
+SRC="${DATA_SRC}/${DATASET_NAME}"
+echo "Checking for source dataset at: ${SRC}"
+if [ ! -e "${SRC}" ]; then
+    echo "❌ Source dataset missing: ${SRC}"
+    exit 1
 fi
+echo "📦 Copying ${SRC}..."
+rsync -au "${SRC}" "${DATA_DST}/"
 
 cd ~/workspace/dressing_sim_ws/diffusion_policy
 echo "Working directory: $(pwd)"
@@ -93,12 +71,9 @@ echo "Working directory: $(pwd)"
 # -------------------- TRAINING COMMAND --------------------
 
 python train.py \
-  --config-name=train_diffusion_transformer_hybrid_workspace \
+  --config-name=train_diffusion_transformer_lowdim_workspace \
   name=${RUN_NAME} \
-  task.dataset.modalities=${MODALITIES} \
   hydra.job.num=${SLURM_ARRAY_TASK_ID} \
-  task.shape_meta.obs.image.shape=${IMAGE_SHAPE} \
-  task.shape_meta.obs.state.shape=${STATE_SHAPE} \
   task.dataset.zarr_path=${ZARR_FILE} \
   dataloader.batch_size=64 \
   dataloader.num_workers=8 \

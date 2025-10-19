@@ -12,7 +12,7 @@
 #SBATCH --get-user-env
 #SBATCH --gres=gpu:nvidia_rtx_6000_ada_generation:1
 #SBATCH --exclude=galhotra-compute-01,thickstun-compute-01
-#SBATCH --array=0
+#SBATCH --array=0-6
 
 export SLURM_ARRAY_TASK_ID=${SLURM_ARRAY_TASK_ID:-0}
 export HYDRA_FULL_ERROR=1
@@ -29,7 +29,7 @@ mkdir -p /scratch/$USER/slurm_logs
 
 # -------------------- DEFINE MODALITIES + NAMES --------------------
 MODALITIES_LIST=(
-  ["pos","vel","force"]
+  ["rgb","pos","vel","force","depth"]
   ["rgb","pos","vel","force"]
   ["rgb","pos","vel"]
   ["rgb","pos"]
@@ -51,6 +51,7 @@ STATE_SHAPE_LIST=(
   [3]
   [4]
 )
+
 IMAGE_SHAPE_LIST=(
   [4,128,128]
   [3,128,128]
@@ -75,17 +76,18 @@ OUTPUT_DST=~/workspace/dressing_sim_ws/diffusion_policy/data/outputs/${RUN_NAME}
 # create output folder if missing
 mkdir -p "$(dirname ${OUTPUT_DST})"
 
-ZARR_FILE="${DATA_DST}/depth_halton_n8_0123567_50_compressed.zarr"
+DATASET_NAME="depth_halton_n8_0123567_50_compressed.zarr"
+ZARR_FILE="${DATA_DST}/${DATASET_NAME}"
+echo "Zarr file path: ${ZARR_FILE}"
 
-# check if dataset folder or main .zarr file missing
-if [ ! -d "${DATA_DST}" ] || [ ! -e "${ZARR_FILE}" ]; then
-    echo "📦 Dataset missing (folder or file not found). Copying from ${DATA_SRC}..."
-    mkdir -p "${DATA_DST}"
-    rsync -a "${DATA_SRC}/" "${DATA_DST}/"
-    echo "✅ Dataset copied to ${DATA_DST}"
-else
-    echo "✅ Dataset and .zarr file already exist at ${DATA_DST}, skipping copy."
+SRC="${DATA_SRC}/${DATASET_NAME}"
+echo "Checking for source dataset at: ${SRC}"
+if [ ! -e "${SRC}" ]; then
+    echo "❌ Source dataset missing: ${SRC}"
+    exit 1
 fi
+echo "📦 Copying ${SRC}..."
+rsync -au "${SRC}" "${DATA_DST}/"
 
 cd ~/workspace/dressing_sim_ws/diffusion_policy
 echo "Working directory: $(pwd)"
