@@ -17,7 +17,7 @@ class FirstArmLowdimDataset(BaseLowdimDataset):
             pad_after=0,
             obs_key='state',
             obs_eef_target=False,
-            action_key='velocity',
+            action_key='action',
             use_manual_normalizer=False,
             seed=42,
             val_ratio=0.0
