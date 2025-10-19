@@ -1,4 +1,4 @@
-name: first_arm_hybrid
+name: uncropped_pos_vel_force
 
 shape_meta:
   obs:
@@ -14,7 +14,7 @@ obs_eef_target: False
 
 dataset:
   _target_: diffusion_policy.dataset.first_arm_hybrid_dataset.FirstArmHybridDataset
-  zarr_path: /scratch/pnt8/first_arm_scene/datasets/depth_halton_n=8_012_50_compressed.zarr
+  zarr_path: /scratch/pnt8/first_arm_scene/datasets/depth_halton_n8_0123567_50_compressed.zarr
   modalities: ['rgb', 'pos', 'vel', 'force', 'depth']
   horizon: ${horizon}
   pad_before: ${eval:'${n_obs_steps}-1'}
