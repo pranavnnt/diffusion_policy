@@ -78,7 +78,7 @@ val_dataloader:
   persistent_workers: True
 
 eval:
-  ckpt: /home/pranavnnt/workspace/dressing_sim_ws/dressing_policies/weights/uncropped_full_dataset_rgbd_pos_vel_force_first_arm_hybrid.0_2025-10-14_19-18-16/checkpoints/latest.ckpt
+  ckpt: /home/pranavnnt/workspace/dressing_sim_ws/dressing_policies/weights/08.59.14_first_env_seed0_data_trimmedto33_first_arm_lowdim_transformer_combined_first_arm_env_lowdim/checkpoints/latest.ckpt
 
 optimizer:
   transformer_weight_decay: 1.0e-3
