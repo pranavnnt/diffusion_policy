@@ -1,4 +1,4 @@
-name: first_arm_hybrid
+name: uncropped_pos_vel_force
 
 shape_meta:
   obs:

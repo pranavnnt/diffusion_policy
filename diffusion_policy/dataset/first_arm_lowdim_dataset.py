@@ -17,7 +17,7 @@ class FirstArmLowdimDataset(BaseLowdimDataset):
             pad_after=0,
             obs_key='state',
             obs_eef_target=False,
-            action_key='velocity',
+            action_key='action',
             use_manual_normalizer=False,
             seed=42,
             val_ratio=0.0
@@ -49,7 +49,7 @@ class FirstArmLowdimDataset(BaseLowdimDataset):
         self.pad_after = pad_after
 
     def get_validation_dataset(self):
-        val_set = copy.copy(self)
+        val_set = copy.deepcopy(self)
         val_set.sampler = SequenceSampler(
             replay_buffer=self.replay_buffer, 
             sequence_length=self.horizon,
@@ -73,6 +73,22 @@ class FirstArmLowdimDataset(BaseLowdimDataset):
 
     def __len__(self) -> int:
         return len(self.sampler)
+    
+    def _filter_obs(self, obs):
+        pos = obs[:, :3]
+        vel = obs[:, 3:6]
+        in_arm = obs[:, 6]
+        force = obs[:, 7:11]
+        bigger_hole_area = obs[:, 11:12]       # keep 2-D shape
+        arm_pos = obs[:, 12:24]
+        hand_pos = obs[:, 24:31]
+        cloth_features = obs[:, 31:]
+    
+        obs_filtered = np.concatenate(
+            [pos, vel, force, bigger_hole_area, hand_pos, cloth_features],
+            axis=1
+        )
+        return obs_filtered
 
     def _sample_to_data(self, sample):
         # Rename to the standard keys the policy expects:
@@ -82,9 +98,9 @@ class FirstArmLowdimDataset(BaseLowdimDataset):
         assert obs.ndim == 2, f"Expected obs to be 2D, got {obs.ndim}D"
         assert obs.shape[1] == 37, f"Expected obs to have 37 dimensions, got {obs.shape[1]}"
         
-        obs_trimmed = obs_trimmed = np.concatenate([obs[:, :18], obs[:, 24:]], axis=1)
-         # Remove forearm and backarm position from state
-        assert obs_trimmed.shape[1] == 31, f"Expected trimmed obs to have 31 dimensions, got {obs_trimmed.shape[1]}"
+        obs_trimmed = np.array(self._filter_obs(obs))
+        # Remove forearm and backarm position from state
+        assert obs_trimmed.shape[1] == 24, f"Expected trimmed obs to have 24 dimensions, got {obs_trimmed.shape[1]}"
         
         return {
             'obs':    obs_trimmed,
@@ -97,3 +113,14 @@ class FirstArmLowdimDataset(BaseLowdimDataset):
 
         torch_data = dict_apply(data, torch.from_numpy)
         return torch_data
+    
+    def preprocess_obs(self, sample):
+        """Process a single Unity observation dict into tensors."""
+        obs = sample[self.obs_key]
+    
+        # --- Filter obs (state) ---
+        obs_filtered = self._filter_obs(np.array(obs)[None, :])[0]
+    
+        return {
+            "state": torch.from_numpy(obs_filtered).float(),
+        }

@@ -1,0 +1,109 @@
+#!/bin/bash
+#SBATCH -J first_arm_hybrid_train             # Job name
+#SBATCH -o slurm/slurm_output_%A_%a.out   # STDOUT
+#SBATCH -e slurm/slurm_error_%A_%a.err   # STDERR
+#SBATCH -N 1
+#SBATCH -n 1
+#SBATCH --cpus-per-task=8
+#SBATCH --requeue
+#SBATCH --mem=48G
+#SBATCH -t 30:00:00
+#SBATCH --partition=gpu
+#SBATCH --get-user-env
+#SBATCH --gres=gpu:nvidia_rtx_6000_ada_generation:1
+#SBATCH --exclude=galhotra-compute-01,thickstun-compute-01
+#SBATCH --array=0-6
+
+export SLURM_ARRAY_TASK_ID=${SLURM_ARRAY_TASK_ID:-0}
+export HYDRA_FULL_ERROR=1
+
+# -------------------- ENVIRONMENT SETUP --------------------
+echo "Running on $(hostname)"
+echo "SLURM_ARRAY_TASK_ID = ${SLURM_ARRAY_TASK_ID}"
+
+source "$(conda info --base)/etc/profile.d/conda.sh"
+conda activate robodiff
+
+# Ensure log + scratch directories exist
+mkdir -p /scratch/$USER/slurm_logs
+
+# -------------------- DEFINE MODALITIES + NAMES --------------------
+MODALITIES_LIST=(
+  ["rgb","pos","vel","force","depth"]
+  ["rgb","pos","vel","force"]
+  ["rgb","pos","vel"]
+  ["rgb","pos"]
+  ["rgb","force"]
+)
+
+NAMES_LIST=(
+  "uncropped_full_dataset_rgbd_pos_vel_force"
+  "uncropped_full_dataset_rgb_pos_vel_force"
+  "uncropped_full_dataset_rgb_pos_vel"
+  "uncropped_full_dataset_rgb_pos"
+  "uncropped_full_dataset_rgb_force"
+)
+
+STATE_SHAPE_LIST=(
+  [10]
+  [10]
+  [6]
+  [3]
+  [4]
+)
+
+IMAGE_SHAPE_LIST=(
+  [4,128,128]
+  [3,128,128]
+  [3,128,128]
+  [3,128,128]
+  [3,128,128]
+)
+
+MODALITIES=${MODALITIES_LIST[$SLURM_ARRAY_TASK_ID]}
+RUN_NAME=${NAMES_LIST[$SLURM_ARRAY_TASK_ID]}
+STATE_SHAPE=${STATE_SHAPE_LIST[$SLURM_ARRAY_TASK_ID]}
+IMAGE_SHAPE=${IMAGE_SHAPE_LIST[$SLURM_ARRAY_TASK_ID]}
+
+echo "Selected modalities: ${MODALITIES}"
+echo "Run name: ${RUN_NAME}"
+
+# -------------------- STAGE DATA TO SCRATCH --------------------
+DATA_SRC=~/workspace/dressing_sim_ws/diffusion_policy/diffusion_policy/data/first_arm_scene
+DATA_DST=/scratch/pnt8/first_arm_scene/datasets
+OUTPUT_DST=~/workspace/dressing_sim_ws/diffusion_policy/data/outputs/${RUN_NAME}
+
+# create output folder if missing
+mkdir -p "$(dirname ${OUTPUT_DST})"
+
+DATASET_NAME="depth_halton_n8_0123567_50_compressed.zarr"
+ZARR_FILE="${DATA_DST}/${DATASET_NAME}"
+echo "Zarr file path: ${ZARR_FILE}"
+
+SRC="${DATA_SRC}/${DATASET_NAME}"
+echo "Checking for source dataset at: ${SRC}"
+if [ ! -e "${SRC}" ]; then
+    echo "❌ Source dataset missing: ${SRC}"
+    exit 1
+fi
+echo "📦 Copying ${SRC}..."
+rsync -au "${SRC}" "${DATA_DST}/"
+
+cd ~/workspace/dressing_sim_ws/diffusion_policy
+echo "Working directory: $(pwd)"
+
+# -------------------- TRAINING COMMAND --------------------
+
+python train.py \
+  --config-name=train_diffusion_transformer_hybrid_workspace \
+  name=${RUN_NAME} \
+  task.dataset.modalities=${MODALITIES} \
+  hydra.job.num=${SLURM_ARRAY_TASK_ID} \
+  task.shape_meta.obs.image.shape=${IMAGE_SHAPE} \
+  task.shape_meta.obs.state.shape=${STATE_SHAPE} \
+  task.dataset.zarr_path=${ZARR_FILE} \
+  dataloader.batch_size=64 \
+  dataloader.num_workers=8 \
+  training.resume=True
+
+echo "✅ Job ${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID} completed at $(date)"
