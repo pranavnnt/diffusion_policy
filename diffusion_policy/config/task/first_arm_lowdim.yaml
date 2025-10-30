@@ -7,7 +7,7 @@ obs_eef_target: False
 
 dataset:
   _target_: diffusion_policy.dataset.first_arm_lowdim_dataset.FirstArmLowdimDataset
-  zarr_path: diffusion_policy/data/first_arm_scene/seed0_combined.zarr
+  zarr_path: /scratch/pnt8/first_arm_scene/datasets/depth_halton_n8_0123567_50_compressed_upsampled_x5.zarr
   horizon: ${horizon}
   pad_before: ${eval:'${n_obs_steps}-1'}
   pad_after: ${eval:'${n_action_steps}-1'}
@@ -15,3 +15,5 @@ dataset:
   use_manual_normalizer: False
   seed: 42
   val_ratio: 0.02
+  upsampled: True
+  upsample_multiplier: 5 

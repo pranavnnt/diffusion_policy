@@ -20,7 +20,9 @@ class FirstArmLowdimDataset(BaseLowdimDataset):
             action_key='action',
             use_manual_normalizer=False,
             seed=42,
-            val_ratio=0.0
+            val_ratio=0.0,
+            upsampled=True,
+            upsample_multiplier=5, 
             ):
         super().__init__()
         self.replay_buffer = ReplayBuffer.copy_from_path(
@@ -32,9 +34,11 @@ class FirstArmLowdimDataset(BaseLowdimDataset):
             seed=seed)
         train_mask = ~val_mask
         
+        seq_len = horizon * upsample_multiplier if upsampled else horizon
+
         self.sampler = SequenceSampler(
             replay_buffer=self.replay_buffer, 
-            sequence_length=horizon,
+            sequence_length=seq_len,
             pad_before=pad_before, 
             pad_after=pad_after,
             episode_mask=train_mask)
@@ -48,11 +52,16 @@ class FirstArmLowdimDataset(BaseLowdimDataset):
         self.pad_before = pad_before
         self.pad_after = pad_after
 
+        self.upsampled = upsampled
+        self.upsample_multiplier = upsample_multiplier
+
     def get_validation_dataset(self):
         val_set = copy.deepcopy(self)
+        seq_len = self.horizon * self.upsample_multiplier if self.upsampled else self.horizon
+
         val_set.sampler = SequenceSampler(
             replay_buffer=self.replay_buffer, 
-            sequence_length=self.horizon,
+            sequence_length=seq_len,
             pad_before=self.pad_before, 
             pad_after=self.pad_after,
             episode_mask=~self.train_mask
@@ -108,8 +117,14 @@ class FirstArmLowdimDataset(BaseLowdimDataset):
         }
 
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
-        sample = self.sampler.sample_sequence(idx)
-        data = self._sample_to_data(sample)
+        if self.upsampled:
+            raw_sample = self.sampler.sample_sequence(idx)
+            # Subsample every `upsample_multiplier` frame to restore original timing
+            for k in [self.obs_key, self.action_key]:
+                raw_sample[k] = raw_sample[k][::self.upsample_multiplier]
+        else:
+            raw_sample = self.sampler.sample_sequence(idx)
 
+        data = self._sample_to_data(raw_sample)
         torch_data = dict_apply(data, torch.from_numpy)
         return torch_data
