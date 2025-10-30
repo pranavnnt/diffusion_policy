@@ -116,6 +116,24 @@ class FirstArmLowdimDataset(BaseLowdimDataset):
             'action': act,
         }
 
+    def add_noise(self, obs):
+
+        obs_std = np.zeros_like(obs)
+        obs_std[:, :3] = [0.5, 0.1, 0.1]
+        obs_std[:, 8:11] = 0.01  # add small noise to force readings
+        obs_std[12] = 25
+        obs_std[:, 31:36] = 1
+
+        obs_noise = np.random.normal(0, obs_std)
+        noisy_obs = obs + obs_noise
+        
+        # multiplicative factor for force magnitude
+        force_magnitude_factor = np.random.uniform(0.9, 1.1, size=(obs.shape[0], 1))
+        noisy_obs[:,7] *= force_magnitude_factor
+
+        return noisy_obs
+
+
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
         if self.upsampled:
             raw_sample = self.sampler.sample_sequence(idx)
@@ -124,6 +142,11 @@ class FirstArmLowdimDataset(BaseLowdimDataset):
                 raw_sample[k] = raw_sample[k][::self.upsample_multiplier]
         else:
             raw_sample = self.sampler.sample_sequence(idx)
+
+        # add noise
+        obs = raw_sample[self.obs_key]
+        obs = self.add_noise(obs)
+        raw_sample[self.obs_key] = obs
 
         data = self._sample_to_data(raw_sample)
         torch_data = dict_apply(data, torch.from_numpy)
