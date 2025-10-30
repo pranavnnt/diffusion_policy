@@ -1,7 +1,7 @@
 name: first_arm_env_lowdim
 
-obs_dim: 24
-action_dim: 3
+obs_dim: 9
+action_dim: 2
 keypoint_dim: 0
 obs_eef_target: False
 

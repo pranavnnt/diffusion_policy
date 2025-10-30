@@ -92,15 +92,33 @@ class FirstArmLowdimDataset(BaseLowdimDataset):
         arm_pos = obs[:, 12:24]
         hand_pos = obs[:, 24:31]
         cloth_features = obs[:, 31:]
-    
+
+        # distance between fingertip and EEF in X direction
+        rel_pos_x = np.expand_dims(pos[:, 0] - arm_pos[:, 0], axis=1)
+        rel_pos_z = np.expand_dims(pos[:, 2] - arm_pos[:, 2], axis=1)
+        vel_x     = np.expand_dims(vel[:, 0], axis=1)
+        vel_z     = np.expand_dims(vel[:, 2], axis=1)
+
+        # hand_position_state = [hand_z_max, hand_z_min, thumb_x_max, index_x_max, middle_x_max, ring_x_max, pinky_x_max]
+        # cloth position state = cloth_features = [min(pos[0] for pos in relative_cloth_loop), max(pos[0] for pos in relative_cloth_loop),
+        #                                          min(pos[1] for pos in relative_cloth_loop), max(pos[1] for pos in relative_cloth_loop),
+        #                                          min(pos[2] for pos in relative_cloth_loop), max(pos[2] for pos in relative_cloth_loop)]
+        
+        cloth_rel_pos_z = np.stack([cloth_features[:, 4] - hand_pos[:, 1],
+                                    cloth_features[:, 5] - hand_pos[:, 0]], axis=1)
+
+        force_mag = force[:, 0:1]
+        force_vec = force_mag * force[:, 1:4]     
+
         obs_filtered = np.concatenate(
-            [pos, vel, force, bigger_hole_area, hand_pos, cloth_features],
+            [rel_pos_x, rel_pos_z, vel_x, vel_z, cloth_rel_pos_z, force_vec],
             axis=1
-        )
+        )   # [T, 1+1+1+1+2+3 = 9]
         return obs_filtered
 
     def _sample_to_data(self, sample):
         # Rename to the standard keys the policy expects:
+
         obs = sample[self.obs_key]        # shape [T, D_o]
         act = sample[self.action_key]     # shape [T, D_a]
         
@@ -109,30 +127,27 @@ class FirstArmLowdimDataset(BaseLowdimDataset):
         
         obs_trimmed = np.array(self._filter_obs(obs))
         # Remove forearm and backarm position from state
-        assert obs_trimmed.shape[1] == 24, f"Expected trimmed obs to have 24 dimensions, got {obs_trimmed.shape[1]}"
+        assert obs_trimmed.shape[1] == 9, f"Expected trimmed obs to have 9 dimensions, got {obs_trimmed.shape[1]}"
         
+        act_trimmed = act[:, [0, 2]]
+
         return {
             'obs':    obs_trimmed,
-            'action': act,
+            'action': act_trimmed,
         }
 
     def add_noise(self, obs):
 
-        obs_std = np.zeros_like(obs)
-        obs_std[:, :3] = [0.5, 0.1, 0.1]
-        obs_std[:, 8:11] = 0.01  # add small noise to force readings
-        obs_std[12] = 25
-        obs_std[:, 31:36] = 1
+        obs_vector = obs["obs"]
 
-        obs_noise = np.random.normal(0, obs_std)
-        noisy_obs = obs + obs_noise
+        # obs = [rel_pos_x, rel_pos_z, vel_x, vel_z, cloth_rel_pos_z, force_vec]
+        obs_std = [0.5, 0.5, 0.05, 0.05, 2, 2, 2, 2, 2]    
         
-        # multiplicative factor for force magnitude
-        force_magnitude_factor = np.random.uniform(0.9, 1.1, size=(obs.shape[0], 1))
-        noisy_obs[:,7] *= force_magnitude_factor
-
-        return noisy_obs
-
+        obs_noise = np.random.normal(0, obs_std)
+        noisy_obs = obs_vector + obs_noise
+        
+        obs["obs"] = noisy_obs
+        return obs
 
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
         if self.upsampled:
@@ -143,11 +158,7 @@ class FirstArmLowdimDataset(BaseLowdimDataset):
         else:
             raw_sample = self.sampler.sample_sequence(idx)
 
-        # add noise
-        obs = raw_sample[self.obs_key]
-        obs = self.add_noise(obs)
-        raw_sample[self.obs_key] = obs
-
         data = self._sample_to_data(raw_sample)
+        data = self.add_noise(data)
         torch_data = dict_apply(data, torch.from_numpy)
         return torch_data
