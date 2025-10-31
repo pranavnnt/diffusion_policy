@@ -20,7 +20,9 @@ class FirstArmLowdimDataset(BaseLowdimDataset):
             action_key='action',
             use_manual_normalizer=False,
             seed=42,
-            val_ratio=0.0
+            val_ratio=0.0,
+            upsampled=True,
+            upsample_multiplier=5, 
             ):
         super().__init__()
         self.replay_buffer = ReplayBuffer.copy_from_path(
@@ -32,9 +34,11 @@ class FirstArmLowdimDataset(BaseLowdimDataset):
             seed=seed)
         train_mask = ~val_mask
         
+        seq_len = horizon * upsample_multiplier if upsampled else horizon
+
         self.sampler = SequenceSampler(
             replay_buffer=self.replay_buffer, 
-            sequence_length=horizon,
+            sequence_length=seq_len,
             pad_before=pad_before, 
             pad_after=pad_after,
             episode_mask=train_mask)
@@ -48,11 +52,16 @@ class FirstArmLowdimDataset(BaseLowdimDataset):
         self.pad_before = pad_before
         self.pad_after = pad_after
 
+        self.upsampled = upsampled
+        self.upsample_multiplier = upsample_multiplier
+
     def get_validation_dataset(self):
         val_set = copy.deepcopy(self)
+        seq_len = self.horizon * self.upsample_multiplier if self.upsampled else self.horizon
+
         val_set.sampler = SequenceSampler(
             replay_buffer=self.replay_buffer, 
-            sequence_length=self.horizon,
+            sequence_length=seq_len,
             pad_before=self.pad_before, 
             pad_after=self.pad_after,
             episode_mask=~self.train_mask
@@ -83,15 +92,33 @@ class FirstArmLowdimDataset(BaseLowdimDataset):
         arm_pos = obs[:, 12:24]
         hand_pos = obs[:, 24:31]
         cloth_features = obs[:, 31:]
-    
+
+        # distance between fingertip and EEF in X direction
+        rel_pos_x = np.expand_dims(pos[:, 0] - arm_pos[:, 0], axis=1)
+        rel_pos_z = np.expand_dims(pos[:, 2] - arm_pos[:, 2], axis=1)
+        vel_x     = np.expand_dims(vel[:, 0], axis=1)
+        vel_z     = np.expand_dims(vel[:, 2], axis=1)
+
+        # hand_position_state = [hand_z_max, hand_z_min, thumb_x_max, index_x_max, middle_x_max, ring_x_max, pinky_x_max]
+        # cloth position state = cloth_features = [min(pos[0] for pos in relative_cloth_loop), max(pos[0] for pos in relative_cloth_loop),
+        #                                          min(pos[1] for pos in relative_cloth_loop), max(pos[1] for pos in relative_cloth_loop),
+        #                                          min(pos[2] for pos in relative_cloth_loop), max(pos[2] for pos in relative_cloth_loop)]
+        
+        cloth_rel_pos_z = np.stack([cloth_features[:, 4] - hand_pos[:, 1],
+                                    cloth_features[:, 5] - hand_pos[:, 0]], axis=1)
+
+        force_mag = force[:, 0:1]
+        force_vec = force_mag * force[:, 1:4]     
+
         obs_filtered = np.concatenate(
-            [pos, vel, force, bigger_hole_area, hand_pos, cloth_features],
+            [rel_pos_x, rel_pos_z, vel_x, vel_z, cloth_rel_pos_z, force_vec],
             axis=1
-        )
+        )   # [T, 1+1+1+1+2+3 = 9]
         return obs_filtered
 
     def _sample_to_data(self, sample):
         # Rename to the standard keys the policy expects:
+
         obs = sample[self.obs_key]        # shape [T, D_o]
         act = sample[self.action_key]     # shape [T, D_a]
         
@@ -100,17 +127,39 @@ class FirstArmLowdimDataset(BaseLowdimDataset):
         
         obs_trimmed = np.array(self._filter_obs(obs))
         # Remove forearm and backarm position from state
-        assert obs_trimmed.shape[1] == 24, f"Expected trimmed obs to have 24 dimensions, got {obs_trimmed.shape[1]}"
+        assert obs_trimmed.shape[1] == 9, f"Expected trimmed obs to have 9 dimensions, got {obs_trimmed.shape[1]}"
         
+        act_trimmed = act[:, [0, 2]]
+
         return {
             'obs':    obs_trimmed,
-            'action': act,
+            'action': act_trimmed,
         }
 
-    def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
-        sample = self.sampler.sample_sequence(idx)
-        data = self._sample_to_data(sample)
+    def add_noise(self, obs):
 
+        obs_vector = obs["obs"]
+
+        # obs = [rel_pos_x, rel_pos_z, vel_x, vel_z, cloth_rel_pos_z, force_vec]
+        obs_std = [0.5, 0.5, 0.05, 0.05, 2, 2, 2, 2, 2]    
+        
+        obs_noise = np.random.normal(0, obs_std)
+        noisy_obs = obs_vector + obs_noise
+        
+        obs["obs"] = noisy_obs
+        return obs
+
+    def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
+        if self.upsampled:
+            raw_sample = self.sampler.sample_sequence(idx)
+            # Subsample every `upsample_multiplier` frame to restore original timing
+            for k in [self.obs_key, self.action_key]:
+                raw_sample[k] = raw_sample[k][::self.upsample_multiplier]
+        else:
+            raw_sample = self.sampler.sample_sequence(idx)
+
+        data = self._sample_to_data(raw_sample)
+        data = self.add_noise(data)
         torch_data = dict_apply(data, torch.from_numpy)
         return torch_data
     
