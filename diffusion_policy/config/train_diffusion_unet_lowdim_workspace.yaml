@@ -112,6 +112,9 @@ training:
   # misc
   tqdm_interval_sec: 1.0
 
+eval:
+  ckpt: /home/pranavnnt/workspace/dressing_sim_ws/dressing_policies/weights/2025.10.30_14.07.45_train_unet_lowdim_upsampled_first_arm_env_lowdim/checkpoints/latest.ckpt
+
 logging:
   project: first_arm_dressing
   resume: True
