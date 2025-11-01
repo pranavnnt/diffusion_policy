@@ -23,6 +23,7 @@ class FirstArmLowdimDataset(BaseLowdimDataset):
             val_ratio=0.0,
             upsampled=True,
             upsample_multiplier=5, 
+            eval=False,
             ):
         super().__init__()
         self.replay_buffer = ReplayBuffer.copy_from_path(
@@ -54,6 +55,7 @@ class FirstArmLowdimDataset(BaseLowdimDataset):
 
         self.upsampled = upsampled
         self.upsample_multiplier = upsample_multiplier
+        self.eval = eval
 
     def get_validation_dataset(self):
         val_set = copy.deepcopy(self)
@@ -110,6 +112,13 @@ class FirstArmLowdimDataset(BaseLowdimDataset):
         force_mag = force[:, 0:1]
         force_vec = force_mag * force[:, 1:4]     
 
+        print("\033[93mRelative position (x):\033[0m", rel_pos_x)
+        print("\033[93mRelative position (z):\033[0m", rel_pos_z)
+        print("\033[93mVelocity (x):\033[0m", vel_x)
+        print("\033[93mVelocity (z):\033[0m", vel_z)
+        print("\033[93mCloth relative position (z):\033[0m", cloth_rel_pos_z)
+        print("\033[93mForce vector:\033[0m", force_vec)
+
         obs_filtered = np.concatenate(
             [rel_pos_x, rel_pos_z, vel_x, vel_z, cloth_rel_pos_z, force_vec],
             axis=1
@@ -159,7 +168,8 @@ class FirstArmLowdimDataset(BaseLowdimDataset):
             raw_sample = self.sampler.sample_sequence(idx)
 
         data = self._sample_to_data(raw_sample)
-        data = self.add_noise(data)
+        if not self.eval:
+            data = self.add_noise(data)
         torch_data = dict_apply(data, torch.from_numpy)
         return torch_data
     
