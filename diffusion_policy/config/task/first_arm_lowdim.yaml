@@ -17,3 +17,4 @@ dataset:
   val_ratio: 0.02
   upsampled: True
   upsample_multiplier: 5 
+  eval: True
