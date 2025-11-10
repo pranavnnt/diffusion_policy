@@ -69,7 +69,7 @@ class FirstArmLowdimDataset(BaseLowdimDataset):
         val_set.train_mask = ~self.train_mask
         return val_set
 
-    def get_normalizer(self, mode='limits', **kwargs):
+    def get_normalizer(self, mode='gaussian', **kwargs):
         # Build a multi-field normalizer over exactly the keys we will normalize
         data = self._sample_to_data(self.replay_buffer)
         # data must be a dict like {'obs': np.ndarray, 'action': np.ndarray}

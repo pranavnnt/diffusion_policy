@@ -39,7 +39,7 @@ policy:
   noise_scheduler:
     _target_: diffusers.schedulers.scheduling_ddpm.DDPMScheduler
     num_train_timesteps: 100
-    beta_start: 0.0001
+    beta_start: 0.0005
     beta_end: 0.02
     beta_schedule: squaredcos_cap_v2
     variance_type: fixed_small # Yilun's paper uses fixed_small_log instead, but easy to cause Nan
@@ -84,7 +84,7 @@ val_dataloader:
 
 optimizer:
   _target_: torch.optim.AdamW
-  lr: 1.0e-4
+  lr: 3.0e-5
   betas: [0.95, 0.999]
   eps: 1.0e-8
   weight_decay: 1.0e-6
@@ -97,7 +97,7 @@ training:
   # optimization
   lr_scheduler: cosine
   lr_warmup_steps: 1000
-  num_epochs: 30
+  num_epochs: 50
   gradient_accumulate_every: 1
   use_ema: True
   # training loop control
