@@ -7,7 +7,7 @@ obs_eef_target: False
 
 dataset:
   _target_: diffusion_policy.dataset.first_arm_lowdim_dataset.FirstArmLowdimDataset
-  zarr_path: /home/pranavnnt/workspace/dressing_sim_ws/dressing_policies/demos/halton_base_dagger_rd1_x3.zarr
+  zarr_path: /home/pranavnnt/workspace/dressing_sim_ws/dressing_policies/demos/halton_base_dagger_rd2_x3.zarr
   horizon: ${horizon}
   pad_before: ${eval:'${n_obs_steps}-1'}
   pad_after: ${eval:'${n_action_steps}-1'}
