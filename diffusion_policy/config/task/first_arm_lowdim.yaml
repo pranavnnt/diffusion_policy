@@ -1,13 +1,13 @@
 name: first_arm_env_lowdim
 
-obs_dim: 31
-action_dim: 3
+obs_dim: 16
+action_dim: 2
 keypoint_dim: 0
 obs_eef_target: False
 
 dataset:
   _target_: diffusion_policy.dataset.first_arm_lowdim_dataset.FirstArmLowdimDataset
-  zarr_path: diffusion_policy/data/first_arm_scene/seed0_combined.zarr
+  zarr_path: /scratch/pnt8/first_arm_scene/datasets/halton_base_dagger_rd2_x3.zarr
   horizon: ${horizon}
   pad_before: ${eval:'${n_obs_steps}-1'}
   pad_after: ${eval:'${n_action_steps}-1'}
@@ -15,3 +15,5 @@ dataset:
   use_manual_normalizer: False
   seed: 42
   val_ratio: 0.02
+  upsampled: True
+  upsample_multiplier: 5 

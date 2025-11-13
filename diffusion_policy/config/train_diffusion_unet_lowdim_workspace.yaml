@@ -3,7 +3,7 @@ defaults:
   - task: first_arm_lowdim
   # - task: first_arm_lowdim
 
-name: train_diffusion_unet_lowdim
+name: train_diffusion_unet_lowdim_upsampled
 _target_: diffusion_policy.workspace.train_diffusion_unet_lowdim_workspace.TrainDiffusionUnetLowdimWorkspace
 
 obs_dim: ${task.obs_dim}
@@ -13,7 +13,7 @@ task_name: ${task.name}
 exp_name: "default"
 
 horizon: 16
-n_obs_steps: 2
+n_obs_steps: 8
 n_action_steps: 8
 n_latency_steps: 0
 past_action_visible: False
@@ -31,7 +31,7 @@ policy:
     local_cond_dim: "${eval: ${task.obs_dim} if ${obs_as_local_cond} else None}"
     global_cond_dim: "${eval: ${task.obs_dim}*${n_obs_steps} if ${obs_as_global_cond} else None}"
     diffusion_step_embed_dim: 256
-    down_dims: [256, 512, 1024]
+    down_dims: [64, 128, 256]
     kernel_size: 5
     n_groups: 8
     cond_predict_scale: True
@@ -39,7 +39,7 @@ policy:
   noise_scheduler:
     _target_: diffusers.schedulers.scheduling_ddpm.DDPMScheduler
     num_train_timesteps: 100
-    beta_start: 0.0001
+    beta_start: 0.0005
     beta_end: 0.02
     beta_schedule: squaredcos_cap_v2
     variance_type: fixed_small # Yilun's paper uses fixed_small_log instead, but easy to cause Nan
@@ -84,7 +84,7 @@ val_dataloader:
 
 optimizer:
   _target_: torch.optim.AdamW
-  lr: 1.0e-4
+  lr: 3.0e-5
   betas: [0.95, 0.999]
   eps: 1.0e-8
   weight_decay: 1.0e-6
@@ -96,14 +96,14 @@ training:
   resume: True
   # optimization
   lr_scheduler: cosine
-  lr_warmup_steps: 500
-  num_epochs: 1000
+  lr_warmup_steps: 1000
+  num_epochs: 50
   gradient_accumulate_every: 1
   use_ema: True
   # training loop control
   # in epochs
   rollout_every: 50
-  checkpoint_every: 200
+  checkpoint_every: 10
   val_every: 1
   sample_every: 5
   # steps per epoch
@@ -113,7 +113,7 @@ training:
   tqdm_interval_sec: 1.0
 
 logging:
-  project: diffusion_policy_debug
+  project: first_arm_dressing
   resume: True
   mode: online
   name: ${now:%Y.%m.%d-%H.%M.%S}_${name}_${task_name}
@@ -138,7 +138,7 @@ hydra:
   job:
     override_dirname: ${name}
   run:
-    dir: data/outputs/${now:%Y.%m.%d}/${now:%H.%M.%S}_${name}_${task_name}
+    dir: data/outputs/${now:%Y.%m.%d}_${now:%H.%M.%S}_${name}_${task_name}
   sweep:
-    dir: data/outputs/${now:%Y.%m.%d}/${now:%H.%M.%S}_${name}_${task_name}
+    dir: data/outputs/${now:%Y.%m.%d}_${now:%H.%M.%S}_${name}_${task_name}
     subdir: ${hydra.job.num}
