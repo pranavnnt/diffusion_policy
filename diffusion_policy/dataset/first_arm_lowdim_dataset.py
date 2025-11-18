@@ -71,7 +71,10 @@ class FirstArmLowdimDataset(BaseLowdimDataset):
 
     def get_normalizer(self, mode='gaussian', **kwargs):
         # Build a multi-field normalizer over exactly the keys we will normalize
-        data = self._sample_to_data(self.replay_buffer)
+        data = {
+            'obs': self.replay_buffer[self.obs_key],
+            'action': self.replay_buffer[self.action_key]
+        }
         # data must be a dict like {'obs': np.ndarray, 'action': np.ndarray}
         normalizer = LinearNormalizer()
         normalizer.fit(data=data, last_n_dims=1, mode=mode, **kwargs)
@@ -169,7 +172,7 @@ class FirstArmLowdimDataset(BaseLowdimDataset):
         
         obs_trimmed = np.array(self._filter_obs(obs))
         # Remove forearm and backarm position from state
-        assert obs_trimmed.shape[1] == 16, f"Expected trimmed obs to have 6 dimensions, got {obs_trimmed.shape[1]}"
+        assert obs_trimmed.shape[1] == 16, f"Expected trimmed obs to have 16 dimensions, got {obs_trimmed.shape[1]}"
         
         act_trimmed = act[:, [0, 2]]
 
