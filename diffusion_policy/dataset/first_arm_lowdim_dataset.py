@@ -128,6 +128,36 @@ class FirstArmLowdimDataset(BaseLowdimDataset):
         )   # [T, 1+1+1+1+2+5+2+3 = 16]
         return obs_filtered
 
+    def scale_obs(self, obs):
+
+        # obs_filtered = np.concatenate(
+        #    [rel_pos_x, rel_pos_z, vel_x, vel_z, cloth_rel_pos_x, cloth_rel_pos_z, cloth_spread, hand_spread, force_vec],
+        #    axis=1
+        #)
+
+        scaling_vector = np.array([-180,                             # rel_pos_x: directions are flipped for x in real world 
+                                    180,                             # rel_pos_z
+                                   -180,                             # vel_x
+                                    180,                             # vel_z
+                                   -180, -180, -180, -180, -180,      # cloth_rel_pos_x (5)
+                                    180,  180,                       # cloth_rel_pos_z (2)   
+                                    180,                             # cloth_spread
+                                    180,                             # hand_spread
+                                    1, 1, 1])                        # force_vec (3)
+
+        obs_scaled = obs / scaling_vector
+
+        return obs_scaled
+
+    def scale_action(self, action_trimmed):
+
+        scaling_vector = np.array([-180,        # action[0]: directions are flipped for x in real world
+                                    180])       # action[1]: same for z
+
+        action_scaled = action_trimmed / scaling_vector
+
+        return action_scaled
+
     def _sample_to_data(self, sample):
         # Rename to the standard keys the policy expects:
 
@@ -143,9 +173,14 @@ class FirstArmLowdimDataset(BaseLowdimDataset):
         
         act_trimmed = act[:, [0, 2]]
 
+        # for sim2real, obs and action will be scaled
+
+        obs_scaled = self.scale_obs(obs_trimmed)
+        act_scaled = self.scale_action(act_trimmed)
+
         return {
-            'obs':    obs_trimmed,
-            'action': act_trimmed,
+            'obs':    obs_scaled,
+            'action': act_scaled,
         }
 
     def add_noise(self, obs):
@@ -185,7 +220,9 @@ class FirstArmLowdimDataset(BaseLowdimDataset):
             force_vec_noise
         ], axis=1)
 
-        obs["obs"] = obs_vec + noise
+        scaled_noise = self.scale_obs(noise)
+
+        obs["obs"] = obs_vec + scaled_noise
         return obs
 
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:

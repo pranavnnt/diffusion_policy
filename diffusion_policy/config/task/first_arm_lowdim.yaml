@@ -7,7 +7,7 @@ obs_eef_target: False
 
 dataset:
   _target_: diffusion_policy.dataset.first_arm_lowdim_dataset.FirstArmLowdimDataset
-  zarr_path: /scratch/pnt8/first_arm_scene/datasets/halton_base_dagger_rd2_x3.zarr
+  zarr_path: /scratch/pnt8/first_arm_scene/datasets/halton_base_dagger_rd2_x3_upsampled_x4.zarr
   horizon: ${horizon}
   pad_before: ${eval:'${n_obs_steps}-1'}
   pad_after: ${eval:'${n_action_steps}-1'}
@@ -16,4 +16,4 @@ dataset:
   seed: 42
   val_ratio: 0.02
   upsampled: True
-  upsample_multiplier: 5 
+  upsample_multiplier: 4 
