@@ -41,6 +41,43 @@ class LinearNormalizer(DictOfTensorMixin):
                     output_min=output_min,
                     range_eps=range_eps,
                     fit_offset=fit_offset)
+
+    def fit_from_input_stats(
+        self, 
+        input_stats_dict: Dict[str, Dict[str, torch.Tensor]], 
+        range_eps: float=1e-4,
+        output_min: float=-1.0,
+        output_max: float=1.0,
+        **kwargs
+    ):
+        for key, value in input_stats_dict.items():
+            # Extract input stats
+            input_min = value['min']
+            input_max = value['max']
+            
+            # Computing unit scale normalizer using "limits" mode and "fit_offset=True"
+            input_range = input_max - input_min
+            ignore_dim = input_range < range_eps
+            input_range[ignore_dim] = output_max - output_min
+            scale = (output_max - output_min) / input_range
+            offset = output_min - scale * input_min
+            offset[ignore_dim] = (output_max + output_min) / 2 - input_min[ignore_dim]
+            # ignore dims scaled to mean of output max and min
+
+            # save
+            this_params = nn.ParameterDict({
+                'scale': scale,
+                'offset': offset,
+                'input_stats': nn.ParameterDict({
+                    'min': input_min,
+                    'max': input_max,
+                    'mean': float('nan'),
+                    'std': float('nan'),
+                })
+            })
+            for p in this_params.parameters():
+                p.requires_grad_(False)
+            self.params_dict[key] = this_params
     
     def __call__(self, x: Union[Dict, torch.Tensor, np.ndarray]) -> torch.Tensor:
         return self.normalize(x)
