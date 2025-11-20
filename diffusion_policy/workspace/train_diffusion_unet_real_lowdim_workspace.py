@@ -60,6 +60,27 @@ class TrainDiffusionUnetRealLowdimWorkspace(BaseWorkspace):
         self.global_step = 0
         self.epoch = 0
 
+    def _print_dataset_diagnostics(self, cfg, dataset, train_dataloader, val_dataloaders):
+        print()
+        print("============= Dataset Diagnostics =============")
+        print(f"Number of datasets: {self.num_datasets}")
+        print(f"Sample probabilities: {self.sample_probabilities}")
+        print(f"[Training] Batches: {len(train_dataloader)}")
+        for i in range(self.num_datasets):
+            print(f"[Val {i}] Batches: {len(val_dataloaders[i])}")
+        print()
+
+        for i in range(self.num_datasets):
+            val_dataset = dataset.get_validation_dataset(i)
+            print(f"Dataset {i}: {dataset.zarr_paths[i]}")
+            print("------------------------------------------------")
+            print(f"Train demos: {np.sum(dataset.train_masks[i])}")
+            print(f"Val demos: {np.sum(dataset.val_masks[i])}")
+            print(f"Train samples: {len(dataset.samplers[i])}")
+            print(f"Val samples: {len(val_dataset)}")
+            print()
+        print("================================================")
+
     def run(self):
         cfg = copy.deepcopy(self.cfg)
 
@@ -74,12 +95,22 @@ class TrainDiffusionUnetRealLowdimWorkspace(BaseWorkspace):
         dataset: BaseLowdimDataset
         dataset = hydra.utils.instantiate(cfg.task.dataset)
         assert isinstance(dataset, BaseLowdimDataset)
+
+        self.num_datasets = dataset.get_num_datasets()
+        print("In workspace, number of datasets:", self.num_datasets)
+        self.sample_probabilities = dataset.get_sample_probabilities()
+
         train_dataloader = DataLoader(dataset, **cfg.dataloader)
         normalizer = dataset.get_normalizer()
 
-        # configure validation dataset
-        val_dataset = dataset.get_validation_dataset()
-        val_dataloader = DataLoader(val_dataset, **cfg.val_dataloader)
+        # configure validation datasetself.num_datasets = dataset.get_num_datasets()
+        self.sample_probabilities = dataset.get_sample_probabilities()
+        val_dataloaders = []
+        for i in range(self.num_datasets):
+            val_dataset = dataset.get_validation_dataset(i)
+            val_dataloaders.append(DataLoader(val_dataset, **cfg.val_dataloader))
+        val_sampling_batches = [None] * self.num_datasets
+        self._print_dataset_diagnostics(cfg, dataset, train_dataloader, val_dataloaders)
 
         self.model.set_normalizer(normalizer)
         if cfg.training.use_ema:
@@ -230,20 +261,37 @@ class TrainDiffusionUnetRealLowdimWorkspace(BaseWorkspace):
                 # run validation
                 if (self.epoch % cfg.training.val_every) == 0:
                     with torch.no_grad():
-                        val_losses = list()
-                        with tqdm.tqdm(val_dataloader, desc=f"Validation epoch {self.epoch}", 
-                                leave=False, mininterval=cfg.training.tqdm_interval_sec) as tepoch:
-                            for batch_idx, batch in enumerate(tepoch):
-                                batch = dict_apply(batch, lambda x: x.to(device, non_blocking=True))
-                                loss = self.model.compute_loss(batch)
-                                val_losses.append(loss)
-                                if (cfg.training.max_val_steps is not None) \
-                                    and batch_idx >= (cfg.training.max_val_steps-1):
-                                    break
-                        if len(val_losses) > 0:
-                            val_loss = torch.mean(torch.tensor(val_losses)).item()
-                            # log epoch average validation loss
-                            step_log['val_loss'] = val_loss
+                        val_loss_per_dataset = []
+
+                        for dataset_idx in range(self.num_datasets):
+                            val_losses = []
+                            val_dataloader = val_dataloaders[dataset_idx]
+
+                            with tqdm.tqdm(val_dataloader,
+                                           desc=f"Val dataset {dataset_idx}, epoch {self.epoch}",
+                                           leave=False,
+                                           mininterval=cfg.training.tqdm_interval_sec) as tepoch:
+
+                                for batch_idx, batch in enumerate(tepoch):
+                                    batch = dict_apply(batch, lambda x: x.to(device, non_blocking=True))
+                                    if val_sampling_batches[dataset_idx] is None:
+                                        val_sampling_batches[dataset_idx] = dict_apply(batch, lambda x: x.cpu())           # store first batch for later sampling
+                                    loss = self.model.compute_loss(batch)
+                                    val_losses.append(loss)
+                                    if (cfg.training.max_val_steps is not None) and \
+                                        batch_idx >= (cfg.training.max_val_steps-1):
+                                        break
+
+                            if len(val_losses) > 0:
+                                val_loss = torch.mean(torch.tensor(val_losses)).item()
+                                step_log[f'val_loss_{dataset_idx}'] = val_loss
+                                val_loss_per_dataset.append(val_loss)
+
+                        # Weighted sum across datasets
+                        overall_val = 0
+                        for i in range(self.num_datasets):
+                            overall_val += self.sample_probabilities[i] * val_loss_per_dataset[i]
+                        step_log['val_loss'] = overall_val
 
                 # run diffusion sampling on a training batch
                 if (self.epoch % cfg.training.sample_every) == 0:
@@ -272,6 +320,42 @@ class TrainDiffusionUnetRealLowdimWorkspace(BaseWorkspace):
                         del result
                         del pred_action
                         del mse
+
+                # run multi-dataset validation action MSE
+                if (self.epoch % cfg.training.sample_every) == 0:
+                    with torch.no_grad():
+                        mse_per_dataset = []
+
+                        for dataset_idx in range(self.num_datasets):
+                            val_batch = val_sampling_batches[dataset_idx]
+                            if val_batch is None:
+                                continue  # dataset may be empty
+
+                            batch = dict_apply(val_batch, lambda x: x.to(device, non_blocking=True))
+
+                            obs_dict = {k: batch[k] for k in batch.keys() if k != 'action'}
+                            gt_action = batch['action']
+
+                            result = policy.predict_action(obs_dict)
+
+                            if cfg.pred_action_steps_only:
+                                pred_action = result['action']
+                                start = cfg.n_obs_steps - 1
+                                end = start + cfg.n_action_steps
+                                gt_action = gt_action[:, start:end]
+                            else:
+                                pred_action = result['action_pred']
+
+                            mse = torch.nn.functional.mse_loss(pred_action, gt_action)
+                            step_log[f'val_action_mse_{dataset_idx}'] = mse.item()
+                            mse_per_dataset.append(mse.item())
+
+                        # weighted sum across datasets
+                        overall_mse = 0
+                        for i in range(self.num_datasets):
+                            overall_mse += self.sample_probabilities[i] * mse_per_dataset[i]
+                        step_log['val_action_mse'] = overall_mse
+
                 
                 # checkpoint
                 if (self.epoch % cfg.training.checkpoint_every) == 0:
