@@ -1,5 +1,11 @@
 import numpy as np
 
+def _ensure_2d(x):
+    x = np.asarray(x)
+    if x.ndim == 1:
+        x = x[None, :]
+    return x.astype(np.float32)
+
 def filter_sim_obs(obs):
         
     pos = obs[:, :3]
@@ -67,6 +73,11 @@ def scale_sim_obs(obs):
 
     return obs_scaled
 
+def scale_noise(noise):
+
+    # because the scaling operation is the same for obs and noise,
+    return scale_sim_obs(noise)
+
 def scale_sim_action(action_trimmed):
 
     scaling_vector = np.array([-180,        # action[0]: directions are flipped for x in real world
@@ -75,3 +86,47 @@ def scale_sim_action(action_trimmed):
     action_scaled = action_trimmed / scaling_vector
 
     return action_scaled
+
+def add_noise(obs):
+
+    # adds noise to both scaled sim and real obs
+    
+    obs_vec = obs["obs"]        # shape (T, 16)
+    T = obs_vec.shape[0]
+
+    # --- Noise scales ---
+    rel_pos_std              = np.array([1, 1], dtype=np.float32)
+    vel_std                  = np.array([0.5, 0.5], dtype=np.float32)
+    cloth_rel_pos_z_std      = np.array([2, 2], dtype=np.float32)
+    cloth_rel_pos_x_std      = np.array([1, 1, 1, 1, 1], dtype=np.float32)
+    cloth_spread_std         = np.array([2], dtype=np.float32)
+    hand_spread_std          = np.array([1], dtype=np.float32)
+    force_vec_std            = np.array([2, 2, 2], dtype=np.float32)
+
+    # iid per timestep
+    rel_pos_noise         = np.random.normal(0, rel_pos_std,        size=(T, 2))
+    vel_noise             = np.random.normal(0, vel_std,            size=(T, 2))
+    cloth_rel_pos_z_noise = np.random.normal(0, cloth_rel_pos_z_std,size=(T, 2))
+    force_vec_noise       = np.random.normal(0, force_vec_std,      size=(T, 3))
+    cloth_spread_noise    = np.random.normal(0, cloth_spread_std,     size=(T, 1))
+
+    # one noise sample reused for all timesteps IN THIS SAMPLE (T)
+    cloth_rel_pos_x_noise = np.random.normal(0, cloth_rel_pos_x_std)   # (5,)
+    cloth_rel_pos_x_noise = np.tile(cloth_rel_pos_x_noise, (T, 1))     # (T, 5)
+    hand_spread_noise    = np.random.normal(0, hand_spread_std)          # (1,)
+    hand_spread_noise    = np.tile(hand_spread_noise, (T, 1))           # (T, 1)
+
+    noise = np.concatenate([
+        rel_pos_noise,
+        vel_noise,
+        cloth_rel_pos_x_noise,
+        cloth_rel_pos_z_noise,
+        cloth_spread_noise,
+        hand_spread_noise,
+        force_vec_noise
+    ], axis=1)
+
+    scaled_noise = scale_noise(noise)
+
+    obs["obs"] = obs_vec + scaled_noise
+    return obs

@@ -13,7 +13,7 @@ from diffusion_policy.common.sampler import (
     SequenceSampler, get_val_mask, downsample_mask)
 from diffusion_policy.model.common.normalizer import LinearNormalizer 
 from diffusion_policy.dataset.base_dataset import BaseLowdimDataset
-from diffusion_policy.dressing.sim_transforms import filter_sim_obs, scale_sim_obs, scale_sim_action
+from diffusion_policy.dressing.sim_transforms import filter_sim_obs, scale_sim_obs, scale_sim_action, add_noise
 
 class DressingRealLowdimDataset(BaseLowdimDataset):
     def __init__(self, 
@@ -41,24 +41,25 @@ class DressingRealLowdimDataset(BaseLowdimDataset):
         self.use_domain_encoding = use_domain_encoding
         
         # Load in all the zarr datasets
-        self.num_datasets = len(zarr_configs)
         self.dataset_names = []
         self.replay_buffers = []
         self.train_masks = []
         self.val_masks = []
         self.samplers = []
-        self.sample_probabilities = np.zeros(len(zarr_configs))
+        self.sample_probabilities = []
         self.zarr_paths = []
         self.upsample_multipliers = []
+
+        print(f"Datasets included: {self.include_datasets}")
 
         for i, zarr_config in enumerate(zarr_configs):
             
             # extract name
             dataset_name = zarr_config['name']
-            self.dataset_names.append(dataset_name)
-
             if dataset_name not in self.include_datasets:
                 continue
+
+            self.dataset_names.append(dataset_name)
             
             # extract config info
             zarr_path = zarr_config['path']
@@ -112,16 +113,15 @@ class DressingRealLowdimDataset(BaseLowdimDataset):
                     sequence_length=seq_len,
                     pad_before=pad_before, 
                     pad_after=pad_after,
-                    episode_mask=train_mask
+                    episode_mask=train_mask,
+                    stride=upsample_multiplier
                 )
             )
             
-            # Set up sample probabilities and zarr paths
-            if sampling_weight is not None:
-                self.sample_probabilities[i] = sampling_weight
-            else:
-                self.sample_probabilities[i] = np.sum(train_mask)
+            self.sample_probabilities.append(sampling_weight)
             self.zarr_paths.append(zarr_path)
+
+        self.num_datasets = len(self.dataset_names)
 
         assert len(self.dataset_names) == num_datasets, f"num_datasets {num_datasets}, but found {len(self.dataset_names)} included datasets"
 
@@ -130,37 +130,56 @@ class DressingRealLowdimDataset(BaseLowdimDataset):
         print("Sample probabilities:", self.sample_probabilities)
 
     def get_validation_dataset(self, index=None):
-        # Create validation dataset
-        val_set = copy.copy(self)
-
-        if index == None:
+        
+        if index is None:
             assert self.num_datasets == 1, "Must specify validation dataset index if multiple datasets"
             index = 0
-        else:
-            val_set.replay_buffers = [self.replay_buffers[index]]
-            val_set.train_masks = [self.train_masks[index]]
-            val_set.val_masks = [self.val_masks[index]]
-            val_set.zarr_paths = [self.zarr_paths[index]]
+
+        # Safely clone the replay buffer
+        replay_buffer = ReplayBuffer.copy_from_path(
+            zarr_path=self.zarr_paths[index],
+            store=zarr.MemoryStore(),
+            keys=[self.obs_key, self.action_key]
+        )
+
+        # Create a new instance without calling __init__
+        val_set = self.__class__.__new__(self.__class__)
+
+        # Manually assign attributes
+        val_set.horizon = self.horizon
+        val_set.pad_before = self.pad_before
+        val_set.pad_after = self.pad_after
+        val_set.obs_key = self.obs_key
+        val_set.action_key = self.action_key
+        val_set.use_domain_encoding = self.use_domain_encoding
+        val_set.include_datasets = [self.dataset_names[index]]
+
         val_set.num_datasets = 1
+        val_set.dataset_names = [self.dataset_names[index]]
+        val_set.replay_buffers = [replay_buffer]
+        val_set.train_masks = [self.train_masks[index]]
+        val_set.val_masks = [self.val_masks[index]]
+        val_set.zarr_paths = [self.zarr_paths[index]]
+        val_set.upsample_multipliers = [self.upsample_multipliers[index]]
         val_set.sample_probabilities = np.array([1.0])
 
-        # Set one hot encoding
+        # Domain encoding (one-hot)
         val_set.domain_encoding = np.zeros(self.num_datasets).astype(np.float32)
         val_set.domain_encoding[index] = 1
 
-        upsample_multiplier = self.upsample_multipliers[index]
-        
-        # get sequence length
-        seq_len = self.horizon * upsample_multiplier
+        # Sampler
+        seq_len = self.horizon * self.upsample_multipliers[index]
+        val_set.samplers = [
+            SequenceSampler(
+                replay_buffer=replay_buffer,
+                sequence_length=seq_len,
+                pad_before=self.pad_before,
+                pad_after=self.pad_after,
+                episode_mask=self.val_masks[index],
+                stride=self.upsample_multipliers[index]
+            )
+        ]
 
-        val_set.samplers = [SequenceSampler(
-            replay_buffer=self.replay_buffers[index], 
-            sequence_length=seq_len,
-            pad_before=self.pad_before, 
-            pad_after=self.pad_after,
-            episode_mask=self.val_masks[index]
-        )]
-        
         return val_set
     
     def get_normalizer(self, mode='limits', **kwargs):
@@ -241,6 +260,7 @@ class DressingRealLowdimDataset(BaseLowdimDataset):
         act_scaled = act_trimmed = act[:, [0, 2]]
         if self.dataset_names[sampler_idx].startswith("sim"):
             # print(f"Using simulation data, dataset: {self.dataset_names[sampler_idx]}")
+            # print(f"Obs shape before processing: {obs.shape}, Action shape before processing: {act.shape}")
             obs_trimmed = filter_sim_obs(obs)
             obs_scaled  = scale_sim_obs(obs_trimmed)
             act_scaled  = scale_sim_action(act_trimmed)
@@ -248,6 +268,7 @@ class DressingRealLowdimDataset(BaseLowdimDataset):
         else:
             # real world data
             # print(f"Using real world data, dataset: {self.dataset_names[sampler_idx]}")
+            # print(f"Obs shape before processing: {obs.shape}, Action shape before processing: {act.shape}")
             pass
         assert obs_scaled.shape[1] == 16, f"Expected obs dim 16, got {obs_scaled.shape[1]}"
         
@@ -291,29 +312,21 @@ class DressingRealLowdimDataset(BaseLowdimDataset):
         return sample_probabilities / total
     
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
-        # To sample a sequence, first sample a dataset,
-        # then sample a sequence from that dataset
-        # Note that this implementation does not guarantee that each unique
-        # sequence is sampled on every epoch!
-        
-        # Get sample
         if self.num_datasets == 1:
             sampler_idx = 0
-            sampler = self.samplers[sampler_idx]
-            raw_sample = sampler.sample_sequence(idx)
+            local_idx = idx
         else:
             sampler_idx = np.random.choice(self.num_datasets, p=self.sample_probabilities)
-            sampler = self.samplers[sampler_idx]
-            raw_sample = sampler.sample_sequence(idx)
+            local_idx = np.random.randint(len(self.samplers[sampler_idx]))
 
-        mult = self.upsample_multipliers[sampler_idx]
-        if mult > 1:
-            for k in raw_sample.keys():
-                raw_sample[k] = raw_sample[k][::mult]
-        sample = raw_sample
-        
-        # Process sample
+        sampler = self.samplers[sampler_idx]
+        sample = sampler.sample_sequence(local_idx)
+
         data = self._sample_to_data(sample, sampler_idx)
+        data = add_noise(data)
         torch_data = dict_apply(data, torch.from_numpy)
-        torch_data['domain_encoding'] = torch_data['domain_encoding'].float()
+
+        if self.use_domain_encoding:
+            torch_data['domain_encoding'] = torch_data['domain_encoding'].float()
+
         return torch_data
