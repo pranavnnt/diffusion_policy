@@ -11,19 +11,21 @@ from diffusion_policy.common.pytorch_util import dict_apply
 from diffusion_policy.common.replay_buffer import ReplayBuffer
 from diffusion_policy.common.sampler import (
     SequenceSampler, get_val_mask, downsample_mask)
-from diffusion_policy.model.common.normalizer import LinearNormalizer
+from diffusion_policy.model.common.normalizer import LinearNormalizer 
 from diffusion_policy.dataset.base_dataset import BaseLowdimDataset
 from diffusion_policy.dressing.sim_transforms import filter_sim_obs, scale_sim_obs, scale_sim_action
 
 class DressingRealLowdimDataset(BaseLowdimDataset):
     def __init__(self, 
             zarr_configs,
-            use_domain_encoding=True, 
             horizon=1,
             pad_before=0,
             pad_after=0,
             obs_key='state',
             action_key='action',
+            num_datasets=1,
+            include_datasets=None,
+            use_domain_encoding=True, 
             seed=42):
 
         super().__init__()
@@ -33,6 +35,9 @@ class DressingRealLowdimDataset(BaseLowdimDataset):
         self.horizon = horizon
         self.pad_before = pad_before
         self.pad_after = pad_after
+        self.obs_key = obs_key
+        self.action_key = action_key
+        self.include_datasets = include_datasets
         self.use_domain_encoding = use_domain_encoding
         
         # Load in all the zarr datasets
@@ -51,6 +56,9 @@ class DressingRealLowdimDataset(BaseLowdimDataset):
             # extract name
             dataset_name = zarr_config['name']
             self.dataset_names.append(dataset_name)
+
+            if dataset_name not in self.include_datasets:
+                continue
             
             # extract config info
             zarr_path = zarr_config['path']
@@ -115,8 +123,11 @@ class DressingRealLowdimDataset(BaseLowdimDataset):
                 self.sample_probabilities[i] = np.sum(train_mask)
             self.zarr_paths.append(zarr_path)
 
+        assert len(self.dataset_names) == num_datasets, f"num_datasets {num_datasets}, but found {len(self.dataset_names)} included datasets"
+
         # Normalize sample_probabilities
         self.sample_probabilities = self._normalize_sample_probabilities(self.sample_probabilities)
+        print("Sample probabilities:", self.sample_probabilities)
 
     def get_validation_dataset(self, index=None):
         # Create validation dataset
@@ -160,15 +171,28 @@ class DressingRealLowdimDataset(BaseLowdimDataset):
             
             # Use only sim data for normalization!!!
             if self.dataset_names[i].startswith("sim"):
+                raw_obs = replay_buffer[self.obs_key]
+                raw_act = replay_buffer[self.action_key]
+
+                assert raw_obs.shape[-1] == 37, f"Shape of raw_obs is {raw_obs.shape}, expected last dim to be 37"
+                # Filter & scale ALL sim obs BEFORE computing normals
+                obs_filt = filter_sim_obs(raw_obs)
+                obs_scaled = scale_sim_obs(obs_filt)
+
+                # Trim + scale sim actions BEFORE computing normals
+                raw_act = raw_act[:]
+                act_trim = raw_act[:, [0, 2]]
+                act_scaled = scale_sim_action(act_trim)
+
                 data = {
-                    'obs':    replay_buffer[self.obs_key],
-                    'action': replay_buffer[self.action_key]
+                    'obs': obs_scaled,
+                    'action': act_scaled
                 }
                 normalizer = LinearNormalizer()
                 normalizer.fit(data=data, last_n_dims=1, mode=mode, **kwargs)
 
                 # Update mins and maxes
-                for key in [self.obs_key, self.action_key]:
+                for key in ['obs', 'action']:
                     _max = normalizer[key].params_dict.input_stats.max
                     _min = normalizer[key].params_dict.input_stats.min
 
@@ -216,9 +240,15 @@ class DressingRealLowdimDataset(BaseLowdimDataset):
         obs_scaled = obs_trimmed = obs
         act_scaled = act_trimmed = act[:, [0, 2]]
         if self.dataset_names[sampler_idx].startswith("sim"):
+            # print(f"Using simulation data, dataset: {self.dataset_names[sampler_idx]}")
             obs_trimmed = filter_sim_obs(obs)
             obs_scaled  = scale_sim_obs(obs_trimmed)
             act_scaled  = scale_sim_action(act_trimmed)
+            # print(f"obs_scaled shape: {obs_scaled.shape}, act_scaled shape: {act_scaled.shape}")
+        else:
+            # real world data
+            # print(f"Using real world data, dataset: {self.dataset_names[sampler_idx]}")
+            pass
         assert obs_scaled.shape[1] == 16, f"Expected obs dim 16, got {obs_scaled.shape[1]}"
         
         data = {
@@ -270,11 +300,17 @@ class DressingRealLowdimDataset(BaseLowdimDataset):
         if self.num_datasets == 1:
             sampler_idx = 0
             sampler = self.samplers[sampler_idx]
-            sample = sampler.sample_sequence(idx)
+            raw_sample = sampler.sample_sequence(idx)
         else:
             sampler_idx = np.random.choice(self.num_datasets, p=self.sample_probabilities)
             sampler = self.samplers[sampler_idx]
-            sample = sampler.sample_sequence(idx % len(sampler))
+            raw_sample = sampler.sample_sequence(idx)
+
+        mult = self.upsample_multipliers[sampler_idx]
+        if mult > 1:
+            for k in raw_sample.keys():
+                raw_sample[k] = raw_sample[k][::mult]
+        sample = raw_sample
         
         # Process sample
         data = self._sample_to_data(sample, sampler_idx)

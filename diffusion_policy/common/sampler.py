@@ -83,6 +83,7 @@ class SequenceSampler:
         keys=None,
         key_first_k=dict(),
         episode_mask: Optional[np.ndarray]=None,
+        stride: int=1,
         ):
         """
         key_first_k: dict str: int
@@ -114,6 +115,7 @@ class SequenceSampler:
         self.sequence_length = sequence_length
         self.replay_buffer = replay_buffer
         self.key_first_k = key_first_k
+        self.stride = stride
     
     def __len__(self):
         return len(self.indices)
@@ -150,4 +152,7 @@ class SequenceSampler:
                     data[sample_end_idx:] = sample[-1]
                 data[sample_start_idx:sample_end_idx] = sample
             result[key] = data
+
+            if self.stride > 1:
+                result[key] = result[key][::self.stride]
         return result
