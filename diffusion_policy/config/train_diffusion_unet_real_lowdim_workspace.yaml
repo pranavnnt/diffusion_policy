@@ -116,6 +116,9 @@ training:
   finetuning:
     pretrained_ckpt_path: None      # fill
 
+eval:
+  ckpt: /home/dressing/workspace/bimanual_ws/src/bimanual_dressing/src/dressing_policies/weights/2025.11.19_14.14.50_cotrain_sim+real_first+real_second_dressing_both_arms_real_lowdim/checkpoints/latest.ckpt
+
 logging:
   project: real_world_dressing_cotrain
   resume: True

@@ -14,21 +14,21 @@ dataset:
   num_datasets: 3
   include_datasets: ["sim", "real_first_arm", "real_second_arm"]
   zarr_configs:
-  - path: /scratch/pnt8/dressing_demos/sim/halton_base_dagger_rd2_x3_upsampled_x4.zarr
+  - path: /home/dressing/workspace/bimanual_ws/src/bimanual_dressing/src/dressing_policies/demos/inference/halton_base_dagger_rd2_x3_upsampled_x4.zarr
     name: sim
     max_train_episodes: 370
     sampling_weight: 0.8
     val_ratio: 0.1 
     upsampled: True
     upsample_multiplier: 4
-  - path: /scratch/pnt8/dressing_demos/real/first_arm_pos1234_upsampled_x2.zarr    
+  - path: /home/dressing/workspace/bimanual_ws/src/bimanual_dressing/src/dressing_policies/demos/inference/first_arm_pos1234_upsampled_x2.zarr    
     name: real_first_arm
     max_train_episodes: 18
     sampling_weight: 0.1
     val_ratio: 0.1 # 2 / 20 trajectories
     upsampled: True
     upsample_multiplier: 2
-  - path: /scratch/pnt8/dressing_demos/real/second_arm_pos1234_upsampled_x2.zarr
+  - path: /home/dressing/workspace/bimanual_ws/src/bimanual_dressing/src/dressing_policies/demos/inference/second_arm_pos1234_upsampled_x2.zarr
     name: real_second_arm
     max_train_episodes: 18
     sampling_weight: 0.1
