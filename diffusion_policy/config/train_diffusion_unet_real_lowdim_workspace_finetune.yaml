@@ -116,7 +116,7 @@ training:
   resume: False  # False for initial finetuning
 
 logging:
-  project: real_world_dressing_cotrain
+  project: real_world_dressing
   resume: True
   mode: online
   name: ${now:%Y.%m.%d-%H.%M.%S}_${name}_${task_name}

@@ -117,7 +117,7 @@ training:
     pretrained_ckpt_path: None      # fill
 
 logging:
-  project: real_world_dressing_cotrain
+  project: real_world_dressing_sim
   resume: True
   mode: online
   name: ${now:%Y.%m.%d-%H.%M.%S}_${name}_${task_name}
