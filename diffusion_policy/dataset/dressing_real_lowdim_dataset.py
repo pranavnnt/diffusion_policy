@@ -183,12 +183,23 @@ class DressingRealLowdimDataset(BaseLowdimDataset):
         return val_set
     
     def get_normalizer(self, mode='limits', **kwargs):
+    
         # compute mins and maxes
         assert mode == 'limits', "Only supports limits mode"
         input_stats = {}
+
+        # Check if we have any sim datasets
+        has_sim = any(name.startswith("sim") for name in self.dataset_names)
+
+        if not has_sim:
+            # For finetuning: Return None - normalizer will be loaded from checkpoint
+            print("No sim datasets found. Normalizer should be loaded from pretrained checkpoint.")
+            return None
+
+        # Original sim-based normalization code
         for i, replay_buffer in enumerate(self.replay_buffers):
             
-            # Use only sim data for normalization!!!
+            # Use only sim data for normalization. load it from normalizer
             if self.dataset_names[i].startswith("sim"):
                 raw_obs = replay_buffer[self.obs_key]
                 raw_act = replay_buffer[self.action_key]
