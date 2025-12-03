@@ -1,4 +1,4 @@
-name: dressing_first_arm_real_finetune
+name: dressing_real_first_arm_finetune
 
 obs_dim: 16
 action_dim: 2

@@ -15,7 +15,7 @@ from diffusion_policy.model.common.normalizer import LinearNormalizer
 from diffusion_policy.dataset.base_dataset import BaseLowdimDataset
 from diffusion_policy.dressing.sim_transforms import filter_sim_obs, scale_sim_obs, scale_sim_action, add_noise
 
-class DressingRealLowdimDataset(BaseLowdimDataset):
+class DressingRealDataset(BaseLowdimDataset):
     def __init__(self, 
             zarr_configs,
             horizon=1,

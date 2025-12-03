@@ -2,7 +2,7 @@ defaults:
   - _self_
   - task: dressing_sim
 
-name: train_diffusion_unet_lowdim_upsampled
+name: dressing_sim
 _target_: diffusion_policy.workspace.train_diffusion_unet_lowdim_workspace.TrainDiffusionUnetLowdimWorkspace
 
 obs_dim: ${task.obs_dim}

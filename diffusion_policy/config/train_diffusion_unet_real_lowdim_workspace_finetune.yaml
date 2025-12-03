@@ -1,9 +1,8 @@
 defaults:
   - _self_
-  - task: dressing_first_arm_finetune_only
-  # - task: first_arm_lowdim
+  - task: dressing_real
 
-name: finetune_on_first_arm_dataset
+name: dressing_real_finetuned
 _target_: diffusion_policy.workspace.train_diffusion_unet_real_lowdim_workspace.TrainDiffusionUnetRealLowdimWorkspace
 
 obs_dim: ${task.obs_dim}

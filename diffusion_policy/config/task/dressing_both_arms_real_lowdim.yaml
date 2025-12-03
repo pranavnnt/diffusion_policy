@@ -6,7 +6,7 @@ keypoint_dim: 0
 obs_eef_target: False
 
 dataset:
-  _target_: diffusion_policy.dataset.dressing_real_lowdim_dataset.DressingRealLowdimDataset
+  _target_: diffusion_policy.dataset.dressing_real_dataset.DressingRealDataset
   horizon: ${horizon}
   pad_before: ${eval:'${n_obs_steps}-1'}
   pad_after: ${eval:'${n_action_steps}-1'}
