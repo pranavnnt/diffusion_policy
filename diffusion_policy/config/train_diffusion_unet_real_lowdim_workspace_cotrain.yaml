@@ -1,9 +1,8 @@
 defaults:
   - _self_
-  - task: dressing_both_arms_real_lowdim
-  # - task: first_arm_lowdim
+  - task: dressing_real_cotrain
 
-name: cotrain_sim_real_both_arms_test
+name: dressing_real_cotrain
 _target_: diffusion_policy.workspace.train_diffusion_unet_real_lowdim_workspace.TrainDiffusionUnetRealLowdimWorkspace
 
 obs_dim: ${task.obs_dim}
@@ -84,7 +83,7 @@ val_dataloader:
 
 optimizer:
   _target_: torch.optim.AdamW
-  lr: 3.0e-5
+  lr: 3.0e-6
   betas: [0.95, 0.999]
   eps: 1.0e-8
   weight_decay: 1.0e-6
@@ -93,11 +92,10 @@ training:
   device: "cuda:0"
   seed: 42
   debug: False
-  resume: True
   # optimization
   lr_scheduler: cosine
   lr_warmup_steps: 1000
-  num_epochs: 50
+  num_epochs: 30
   gradient_accumulate_every: 1
   use_ema: True
   # training loop control
@@ -112,12 +110,12 @@ training:
   # misc
   tqdm_interval_sec: 1.0
 
-  pretrained: True
-  finetuning:
-    pretrained_ckpt_path: None      # fill
+  # config/finetune_real.yaml
+  pretrained_checkpoint: /home/pnt8/workspace/dressing_sim_ws/diffusion_policy/data/outputs/2025.11.20_01.04.54_new_aligned_dataset_x1_first_arm_env_lowdim/checkpoints/latest.ckpt
+  resume: False  # False for initial finetuning
 
 logging:
-  project: real_world_dressing_sim
+  project: dressing_real
   resume: True
   mode: online
   name: ${now:%Y.%m.%d-%H.%M.%S}_${name}_${task_name}
@@ -135,14 +133,14 @@ checkpoint:
   save_last_snapshot: False
 
 multi_run:
-  run_dir: data/outputs/real_cotrain/${now:%Y.%m.%d}/${now:%H.%M.%S}_${name}_${task_name}
+  run_dir: data/outputs/real_finetune/${now:%Y.%m.%d}/${now:%H.%M.%S}_${name}_${task_name}
   wandb_name_base: ${now:%Y.%m.%d-%H.%M.%S}_${name}_${task_name}
 
 hydra:
   job:
     override_dirname: ${name}
   run:
-    dir: data/outputs/${now:%Y.%m.%d}_${now:%H.%M.%S}_${name}_${task_name}
+    dir: data/outputs/real/${now:%Y.%m.%d}_${now:%H.%M.%S}_${name}_${task_name}
   sweep:
-    dir: data/outputs/${now:%Y.%m.%d}_${now:%H.%M.%S}_${name}_${task_name}
+    dir: data/outputs/real/${now:%Y.%m.%d}_${now:%H.%M.%S}_${name}_${task_name}
     subdir: ${hydra.job.num}
