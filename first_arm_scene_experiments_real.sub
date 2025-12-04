@@ -39,7 +39,7 @@ LR_VAL=${LR[$LR_INDEX]}
 EPOCH_VAL=${EPOCHS[$EPOCH_INDEX]}
 
 # constant name
-RUN_NAME="dressing_real_first_arm_finetune"
+RUN_NAME="dressing_real_first_arm_finetune_${SLURM_ARRAY_TASK_ID}"
 
 echo "Run: ${RUN_NAME}"
 echo "LR = ${LR_VAL}"
@@ -61,7 +61,6 @@ python train.py \
   --config-name=train_diffusion_unet_real_lowdim_workspace_finetune \
   name=${RUN_NAME} \
   hydra.job.num=${SLURM_ARRAY_TASK_ID} \
-  dataloader.batch_size=64 \
   dataloader.num_workers=8 \
   optimizer.lr=${LR_VAL} \
   training.num_epochs=${EPOCH_VAL} \
