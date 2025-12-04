@@ -29,7 +29,8 @@ class DressingSimDataset(BaseLowdimDataset):
             seed=42,
             val_ratio=0.0,
             upsampled=True,
-            upsample_multiplier=5, 
+            upsample_multiplier=5,
+            force_bins_path="/home/pnt8/workspace/dressing_sim_ws/diffusion_policy/diffusion_policy/data/sim/sim_force_bins_n10.npz",
             ):
         super().__init__()
         self.replay_buffer = ReplayBuffer.copy_from_path(
@@ -61,6 +62,56 @@ class DressingSimDataset(BaseLowdimDataset):
 
         self.upsampled = upsampled
         self.upsample_multiplier = upsample_multiplier
+        
+        # Force binning setup
+        self.force_bins = None
+        self.force_bin_edges = None
+        if force_bins_path is not None:
+            self._load_force_bins(force_bins_path)
+    
+    def _load_force_bins(self, force_bins_path):
+        """Load pre-computed force bin edges from file."""
+        print(f"Loading force bins from: {force_bins_path}")
+        force_data = np.load(force_bins_path)
+        self.force_bin_edges = force_data['bin_edges']
+        self.force_bins = int(force_data['num_bins'])
+        
+        print(f"Loaded force binning configuration:")
+        print(f"  Number of bins: {self.force_bins}")
+        print(f"  X-axis bins: {self.force_bin_edges[0]}")
+        print(f"  Y-axis bins: {self.force_bin_edges[1]}")
+        print(f"  Z-axis bins: {self.force_bin_edges[2]}")
+    
+    def discretize_force(self, force_vec):
+        """
+        Discretize force vector into bins.
+        
+        Args:
+            force_vec: shape [T, 3] - continuous force values
+            
+        Returns:
+            force_bins_indices: shape [T, 3] - bin indices (0 to force_bins-1)
+        """
+        assert self.force_bins is not None, "force_bins must be set to discretize force"
+        assert self.force_bin_edges is not None, "force_bin_edges not loaded"
+        
+        T = force_vec.shape[0]
+        force_bins_indices = np.zeros((T, 3), dtype=np.int64)
+        
+        for dim in range(3):
+            force_bins_indices[:, dim] = np.searchsorted(
+                self.force_bin_edges[dim], force_vec[:, dim], side='right'
+            )
+        
+        return force_bins_indices
+    
+    def apply_force_binning(self, data):
+        """Apply force binning to observation after noise has been added."""
+        if self.force_bins is not None:
+            force_bins_indices = self.discretize_force(data['obs'][:, -3:])
+            data['obs'] = data['obs'].copy()
+            data['obs'][:, -3:] = force_bins_indices.astype(np.float32)
+        return data
 
     def get_validation_dataset(self):
         """Create a validation dataset using the validation mask."""
@@ -80,8 +131,26 @@ class DressingSimDataset(BaseLowdimDataset):
     def get_normalizer(self, mode='gaussian', **kwargs):
         """Build a multi-field normalizer over the data keys."""
         data = self._sample_to_data(self.replay_buffer)
-        normalizer = LinearNormalizer()
-        normalizer.fit(data=data, last_n_dims=1, mode=mode, **kwargs)
+        
+        # If force binning is enabled, we need to handle normalization carefully
+        if self.force_bins is not None:
+            # Get force values before binning for proper normalization stats
+            # We'll normalize everything except force, then set force normalization to identity
+            normalizer = LinearNormalizer()
+            normalizer.fit(data=data, last_n_dims=1, mode=mode, **kwargs)
+            
+            # Override normalization for force dimensions (last 3)
+            # Set to identity: offset=0, scale=1 (no normalization)
+            normalizer['obs'].params_dict['offset'][-3:] = 0.0
+            normalizer['obs'].params_dict['scale'][-3:] = 1.0
+            
+            print("Force binning enabled: force dimensions will not be normalized")
+            print(f"  Bins 0 to {self.force_bins-1} will be used as categorical values")
+        else:
+            # Normal normalization for all dimensions
+            normalizer = LinearNormalizer()
+            normalizer.fit(data=data, last_n_dims=1, mode=mode, **kwargs)
+        
         return normalizer
 
     def get_all_actions(self) -> torch.Tensor:
@@ -151,6 +220,9 @@ class DressingSimDataset(BaseLowdimDataset):
         
         # Add noise augmentation
         data = add_noise(data)
+        
+        # Apply force binning (if enabled) - AFTER noise
+        data = self.apply_force_binning(data)
         
         # Convert to torch tensors
         torch_data = dict_apply(data, torch.from_numpy)
