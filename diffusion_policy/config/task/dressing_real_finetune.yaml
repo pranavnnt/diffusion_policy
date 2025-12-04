@@ -15,7 +15,7 @@ dataset:
   include_datasets: ["sim", "real_first_arm"]
   zarr_configs:
   # Keep sim dataset ONLY for computing normalizer
-  - path: /scratch/pnt8/dressing_demos/sim/halton_base_dagger_rd2_x1_aligned_upsampled_x4.zarr
+  - path: /scratch/pnt8/dressing_demos/sim2real/sim/halton_base_dagger_rd2_x1_aligned_upsampled_x4.zarr
     name: sim
     max_train_episodes: null  # ← SET TO 0! No training data
     sampling_weight: 0.0   # ← SET TO 0! Never sampled
@@ -23,7 +23,7 @@ dataset:
     upsampled: True
     upsample_multiplier: 4
   # Real datasets get all the training weight
-  - path: /scratch/pnt8/dressing_demos/real/round3_data_green_tee_upsampled_x2.zarr    
+  - path: /scratch/pnt8/dressing_demos/sim2real/real/round3_data_green_tee_upsampled_x2.zarr    
     name: real_first_arm
     max_train_episodes: null
     sampling_weight: 1.0  # 100% real arm 1
