@@ -23,7 +23,7 @@ dataset:
     upsampled: True
     upsample_multiplier: 4
   # Real datasets get all the training weight
-  - path: /scratch/pnt8/dressing_demos/sim2real/real/round3_data_green_tee_upsampled_x2.zarr    
+  - path: /scratch/pnt8/dressing_demos/sim2real/real/round3+4_data_green_tee_upsampled_x2.zarr    
     name: real_first_arm
     max_train_episodes: null
     sampling_weight: 1.0  # 100% real arm 1
