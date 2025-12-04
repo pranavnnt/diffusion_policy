@@ -1,7 +1,6 @@
 defaults:
   - _self_
-  - task: first_arm_lowdim
-  # - task: first_arm_lowdim
+  - task: dressing_sim
 
 name: train_diffusion_unet_lowdim_upsampled
 _target_: diffusion_policy.workspace.train_diffusion_unet_lowdim_workspace.TrainDiffusionUnetLowdimWorkspace
@@ -116,7 +115,7 @@ eval:
   ckpt: /home/pranavnnt/workspace/dressing_sim_ws/dressing_policies/weights/2025.11.13_02.12.24_dagger_round2_first_arm_env_lowdim/checkpoints/epoch=0020-val_loss=0.021.ckpt
 
 logging:
-  project: first_arm_dressing
+  project: dressing_sim
   resume: True
   mode: online
   name: ${now:%Y.%m.%d-%H.%M.%S}_${name}_${task_name}
