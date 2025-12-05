@@ -82,11 +82,21 @@ class DressingSimDataset(BaseLowdimDataset):
         return val_set
 
     def get_normalizer(self, mode='gaussian', **kwargs):
+    
         """Build a multi-field normalizer over the data keys."""
         data = self._sample_to_data(self.replay_buffer)
         normalizer = LinearNormalizer()
         normalizer.fit(data=data, last_n_dims=1, mode=mode, **kwargs)
+
+        # Override force channels (last 3 dimensions) to mean=0, std=1
+        obs_stats = normalizer['obs'].params_dict.input_stats
+
+        # Force channels are last 3 indices
+        obs_stats.mean[..., -3:] = 0.0
+        obs_stats.std[..., -3:] = 1.0
+
         return normalizer
+
 
     def get_all_actions(self) -> torch.Tensor:
         """Get all actions from the replay buffer."""

@@ -21,7 +21,7 @@ NOISE_STD = {
     'cloth_rel_pos_z': np.array([2, 2], dtype=np.float32),
     'cloth_spread': np.array([2], dtype=np.float32),
     'hand_spread': np.array([1], dtype=np.float32),
-    'force_vec': np.array([2, 2, 2], dtype=np.float32),
+    'force_vec': np.array([0, 0, 0], dtype=np.float32),
 }
 
 
@@ -141,7 +141,7 @@ def filter_sim_obs(obs: np.ndarray) -> np.ndarray:
         cloth_hand_features['cloth_rel_pos_z'],
         cloth_hand_features['cloth_spread'],
         cloth_hand_features['hand_spread'],
-        force_vec
+        np.zeros_like(force_vec)             # zeroed-out force_vec
     ], axis=1)
     
     return obs_filtered
