@@ -50,7 +50,7 @@ policy:
   action_dim: ${action_dim}
   n_action_steps: ${eval:'${n_action_steps}+${n_latency_steps}'}
   n_obs_steps: ${n_obs_steps}
-  domain_encoding_dim: ${task.dataset.domain_encoding_dim}
+  domain_encoding_dim: "${eval: ${task.dataset.domain_encoding_dim} if ${task.dataset.use_domain_encoding} else 0}"
   num_inference_steps: 100
   obs_as_local_cond: ${obs_as_local_cond}
   obs_as_global_cond: ${obs_as_global_cond}
