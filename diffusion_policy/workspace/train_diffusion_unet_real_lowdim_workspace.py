@@ -19,6 +19,7 @@ import random
 import wandb
 import tqdm
 import shutil
+import dill
 
 from diffusion_policy.common.pytorch_util import dict_apply, optimizer_to
 from diffusion_policy.workspace.base_workspace import BaseWorkspace
@@ -76,7 +77,10 @@ class TrainDiffusionUnetRealLowdimWorkspace(BaseWorkspace):
             print("------------------------------------------------")
             print(f"Train demos: {np.sum(dataset.train_masks[i])}")
             print(f"Val demos: {np.sum(dataset.val_masks[i])}")
-            print(f"Train samples: {len(dataset.samplers[i])}")
+            if dataset.samplers[i] is not None:
+                print(f"Train samples: {len(dataset.samplers[i])}")
+            else:
+                print(f"Train samples: 0 (used for normalization only)")
             print(f"Val samples: {len(val_dataset)}")
             print()
         print("================================================")
@@ -84,7 +88,7 @@ class TrainDiffusionUnetRealLowdimWorkspace(BaseWorkspace):
     def run(self):
         cfg = copy.deepcopy(self.cfg)
 
-        # resume training
+        # resume training (loads full state including optimizer and epoch)
         if cfg.training.resume:
             lastest_ckpt_path = self.get_checkpoint_path()
             if lastest_ckpt_path.is_file():
@@ -101,16 +105,52 @@ class TrainDiffusionUnetRealLowdimWorkspace(BaseWorkspace):
         self.sample_probabilities = dataset.get_sample_probabilities()
 
         train_dataloader = DataLoader(dataset, **cfg.dataloader)
+        
+        # Get normalizer from dataset (computes from sim data even if sim has 0 training samples)
         normalizer = dataset.get_normalizer()
 
-        # configure validation datasetself.num_datasets = dataset.get_num_datasets()
-        self.sample_probabilities = dataset.get_sample_probabilities()
+        # configure validation dataset
         val_dataloaders = []
         for i in range(self.num_datasets):
             val_dataset = dataset.get_validation_dataset(i)
             val_dataloaders.append(DataLoader(val_dataset, **cfg.val_dataloader))
         val_sampling_batches = [None] * self.num_datasets
         self._print_dataset_diagnostics(cfg, dataset, train_dataloader, val_dataloaders)
+
+        # Load pretrained checkpoint if specified (weights only, not optimizer/epoch)
+        if cfg.training.get('pretrained_checkpoint', None) is not None:
+            pretrained_path = pathlib.Path(cfg.training.pretrained_checkpoint)
+            if pretrained_path.is_file():
+                print(f"\n{'='*60}")
+                print(f"LOADING PRETRAINED CHECKPOINT")
+                print(f"{'='*60}")
+                print(f"Path: {pretrained_path}")
+                
+                payload = torch.load(pretrained_path.open('rb'), pickle_module=dill, map_location='cpu')
+                
+                # Load model weights only
+                if 'state_dicts' in payload:
+                    self.model.load_state_dict(payload['state_dicts']['model'])
+                    print("✓ Model weights loaded")
+                    
+                    if cfg.training.use_ema and 'ema_model' in payload['state_dicts']:
+                        self.ema_model.load_state_dict(payload['state_dicts']['ema_model'])
+                        print("✓ EMA model weights loaded")
+                else:
+                    raise ValueError("Checkpoint does not contain 'state_dicts'")
+                
+                print("✓ Using fresh optimizer (not loaded from checkpoint)")
+                print("✓ Starting from epoch 0 and global_step 0")
+                print(f"{'='*60}\n")
+            else:
+                raise FileNotFoundError(f"Pretrained checkpoint not found at {pretrained_path}")
+
+        # Handle case where normalizer is still None
+        if normalizer is None:
+            raise ValueError(
+                "No normalizer available. Either include sim data in dataset or "
+                "provide a pretrained checkpoint with normalizer."
+            )
 
         self.model.set_normalizer(normalizer)
         if cfg.training.use_ema:
@@ -136,15 +176,7 @@ class TrainDiffusionUnetRealLowdimWorkspace(BaseWorkspace):
                 cfg.ema,
                 model=self.ema_model)
 
-        # configure env runner
-        # env_runner: BaseLowdimRunner
-        # env_runner = hydra.utils.instantiate(
-        #     cfg.task.env_runner,
-        #     output_dir=self.output_dir)
-        # assert isinstance(env_runner, BaseLowdimRunner)
-        
-        # env runner is optional
-        
+        # configure env runner (optional)
         env_runner = None
         if hasattr(cfg.task, "env_runner") and cfg.task.env_runner is not None:
             env_runner = hydra.utils.instantiate(
@@ -289,9 +321,16 @@ class TrainDiffusionUnetRealLowdimWorkspace(BaseWorkspace):
 
                         # Weighted sum across datasets
                         overall_val = 0
+                        active_weight_sum = 0
                         for i in range(self.num_datasets):
-                            overall_val += self.sample_probabilities[i] * val_loss_per_dataset[i]
-                        step_log['val_loss'] = overall_val
+                            if self.sample_probabilities[i] > 0 and i < len(val_loss_per_dataset):
+                                overall_val += self.sample_probabilities[i] * val_loss_per_dataset[i]
+                                active_weight_sum += self.sample_probabilities[i]
+                        
+                        if active_weight_sum > 0:
+                            step_log['val_loss'] = overall_val / active_weight_sum
+                        elif len(val_loss_per_dataset) > 0:
+                            step_log['val_loss'] = np.mean(val_loss_per_dataset)
 
                 # run diffusion sampling on a training batch
                 if (self.epoch % cfg.training.sample_every) == 0:
@@ -350,11 +389,18 @@ class TrainDiffusionUnetRealLowdimWorkspace(BaseWorkspace):
                             step_log[f'val_action_mse_{dataset_idx}'] = mse.item()
                             mse_per_dataset.append(mse.item())
 
-                        # weighted sum across datasets
+                        # weighted sum across datasets (only active ones)
                         overall_mse = 0
-                        for i in range(self.num_datasets):
-                            overall_mse += self.sample_probabilities[i] * mse_per_dataset[i]
-                        step_log['val_action_mse'] = overall_mse
+                        active_weight_sum = 0
+                        for i in range(min(self.num_datasets, len(mse_per_dataset))):
+                            if self.sample_probabilities[i] > 0:
+                                overall_mse += self.sample_probabilities[i] * mse_per_dataset[i]
+                                active_weight_sum += self.sample_probabilities[i]
+                        
+                        if active_weight_sum > 0:
+                            step_log['val_action_mse'] = overall_mse / active_weight_sum
+                        elif len(mse_per_dataset) > 0:
+                            step_log['val_action_mse'] = np.mean(mse_per_dataset)
 
                 
                 # checkpoint
@@ -388,12 +434,13 @@ class TrainDiffusionUnetRealLowdimWorkspace(BaseWorkspace):
                 self.global_step += 1
                 self.epoch += 1
 
+
 @hydra.main(
     version_base=None,
     config_path=str(pathlib.Path(__file__).parent.parent.joinpath("config")), 
     config_name=pathlib.Path(__file__).stem)
 def main(cfg):
-    workspace = TrainDiffusionUnetLowdimWorkspace(cfg)
+    workspace = TrainDiffusionUnetRealLowdimWorkspace(cfg)
     workspace.run()
 
 if __name__ == "__main__":

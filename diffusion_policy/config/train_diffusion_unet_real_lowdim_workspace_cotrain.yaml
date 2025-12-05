@@ -1,9 +1,9 @@
 defaults:
   - _self_
-  - task: dressing_sim
+  - task: dressing_real_cotrain
 
-name: dressing_sim
-_target_: diffusion_policy.workspace.train_diffusion_unet_lowdim_workspace.TrainDiffusionUnetLowdimWorkspace
+name: dressing_real_cotrain
+_target_: diffusion_policy.workspace.train_diffusion_unet_real_lowdim_workspace.TrainDiffusionUnetRealLowdimWorkspace
 
 obs_dim: ${task.obs_dim}
 action_dim: ${task.action_dim}
@@ -22,13 +22,13 @@ obs_as_global_cond: True
 pred_action_steps_only: False
 
 policy:
-  _target_: diffusion_policy.policy.diffusion_unet_lowdim_policy.DiffusionUnetLowdimPolicy
+  _target_: diffusion_policy.policy.diffusion_unet_real_lowdim_policy.DiffusionUnetRealLowdimPolicy
 
   model:
     _target_: diffusion_policy.model.diffusion.conditional_unet1d.ConditionalUnet1D
     input_dim: "${eval: ${task.action_dim} if ${obs_as_local_cond} or ${obs_as_global_cond} else ${task.obs_dim} + ${task.action_dim}}"
     local_cond_dim: "${eval: ${task.obs_dim} if ${obs_as_local_cond} else None}"
-    global_cond_dim: "${eval: ${task.obs_dim}*${n_obs_steps} if ${obs_as_global_cond} else None}"
+    global_cond_dim: ${eval:'(${task.obs_dim}*${n_obs_steps}) if ${obs_as_global_cond} else None'}
     diffusion_step_embed_dim: 256
     down_dims: [64, 128, 256]
     kernel_size: 5
@@ -69,21 +69,21 @@ ema:
 
 dataloader:
   batch_size: 256
-  num_workers: 1
+  num_workers: 8
   shuffle: True
   pin_memory: True
   persistent_workers: False
 
 val_dataloader:
   batch_size: 256
-  num_workers: 1
+  num_workers: 8
   shuffle: False
   pin_memory: True
   persistent_workers: False
 
 optimizer:
   _target_: torch.optim.AdamW
-  lr: 3.0e-5
+  lr: 3.0e-6
   betas: [0.95, 0.999]
   eps: 1.0e-8
   weight_decay: 1.0e-6
@@ -92,11 +92,10 @@ training:
   device: "cuda:0"
   seed: 42
   debug: False
-  resume: True
   # optimization
   lr_scheduler: cosine
   lr_warmup_steps: 1000
-  num_epochs: 50
+  num_epochs: 30
   gradient_accumulate_every: 1
   use_ema: True
   # training loop control
@@ -111,8 +110,15 @@ training:
   # misc
   tqdm_interval_sec: 1.0
 
+  # config/finetune_real.yaml
+  pretrained_checkpoint: /home/pnt8/workspace/dressing_sim_ws/diffusion_policy/data/outputs/2025.11.20_01.04.54_new_aligned_dataset_x1_first_arm_env_lowdim/checkpoints/latest.ckpt
+  resume: False  # False for initial finetuning
+
+eval:
+  ckpt: /home/dressing/workspace/bimanual_ws/src/bimanual_dressing/src/dressing_policies/weights/2025.11.19_14.14.50_cotrain_sim+real_first+real_second_dressing_both_arms_real_lowdim/checkpoints/latest.ckpt
+
 logging:
-  project: dressing_sim
+  project: dressing_real
   resume: True
   mode: online
   name: ${now:%Y.%m.%d-%H.%M.%S}_${name}_${task_name}
@@ -130,14 +136,14 @@ checkpoint:
   save_last_snapshot: False
 
 multi_run:
-  run_dir: data/outputs/${now:%Y.%m.%d}/${now:%H.%M.%S}_${name}_${task_name}
+  run_dir: data/outputs/real_finetune/${now:%Y.%m.%d}/${now:%H.%M.%S}_${name}_${task_name}
   wandb_name_base: ${now:%Y.%m.%d-%H.%M.%S}_${name}_${task_name}
 
 hydra:
   job:
     override_dirname: ${name}
   run:
-    dir: data/outputs/${now:%Y.%m.%d}_${now:%H.%M.%S}_${name}_${task_name}
+    dir: data/outputs/real/${now:%Y.%m.%d}_${now:%H.%M.%S}_${name}_${task_name}
   sweep:
-    dir: data/outputs/${now:%Y.%m.%d}_${now:%H.%M.%S}_${name}_${task_name}
+    dir: data/outputs/real/${now:%Y.%m.%d}_${now:%H.%M.%S}_${name}_${task_name}
     subdir: ${hydra.job.num}

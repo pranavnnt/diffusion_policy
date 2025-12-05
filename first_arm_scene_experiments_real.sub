@@ -1,0 +1,79 @@
+#!/bin/bash
+#SBATCH -J dressing_real_first_arm_cotrain            # Job name
+#SBATCH -o slurm/slurm_output_%A_%a.out                # STDOUT
+#SBATCH -e slurm/slurm_error_%A_%a.err                 # STDERR
+#SBATCH -N 1
+#SBATCH -n 1
+#SBATCH --cpus-per-task=8
+#SBATCH --requeue
+#SBATCH --mem=48G
+#SBATCH -t 30:00:00
+#SBATCH --partition=gpu
+#SBATCH --get-user-env
+#SBATCH --gres=gpu:nvidia_rtx_6000_ada_generation:1
+#SBATCH --exclude=galhotra-compute-01,thickstun-compute-01
+#SBATCH --array=0-11   # 3 sim_episodes × 4 sim_weights = 12 jobs
+
+export SLURM_ARRAY_TASK_ID=${SLURM_ARRAY_TASK_ID:-0}
+export HYDRA_FULL_ERROR=1
+
+echo "Running on $(hostname)"
+echo "SLURM_ARRAY_TASK_ID = ${SLURM_ARRAY_TASK_ID}"
+
+source "$(conda info --base)/etc/profile.d/conda.sh"
+conda activate robodiff
+
+# -------------------- PARAMETER GRID --------------------
+SIM_EPISODES=(300 400 500)           # Number of sim episodes to use
+SIM_WEIGHTS=(0.05 0.1 0.2 0.3)        # Sim sampling weight (real gets 1-weight)
+REAL_WEIGHTS=(0.95 0.9 0.8 0.7)       # Real sampling weight (for reference)
+LR=1e-5                          # Fixed learning rate
+EPOCHS=50                        # Fixed epochs
+
+NUM_SIM_EPISODES=${#SIM_EPISODES[@]}
+NUM_SIM_WEIGHTS=${#SIM_WEIGHTS[@]}
+
+# Grid indexing
+SIM_EP_INDEX=$(( SLURM_ARRAY_TASK_ID % NUM_SIM_EPISODES ))
+SIM_WT_INDEX=$(( SLURM_ARRAY_TASK_ID / NUM_SIM_EPISODES ))
+
+SIM_EP_VAL=${SIM_EPISODES[$SIM_EP_INDEX]}
+SIM_WT_VAL=${SIM_WEIGHTS[$SIM_WT_INDEX]}
+REAL_WT_VAL=${REAL_WEIGHTS[$SIM_WT_INDEX]}
+
+# Run name with parameters
+RUN_NAME="dressing_real_cotrain_simep${SIM_EP_VAL}_simwt${SIM_WT_VAL}_${SLURM_ARRAY_TASK_ID}"
+
+echo "Run: ${RUN_NAME}"
+echo "LR = ${LR}"
+echo "EPOCHS = ${EPOCHS}"
+echo "SIM_EPISODES = ${SIM_EP_VAL}"
+echo "SIM_WEIGHT = ${SIM_WT_VAL}"
+echo "REAL_WEIGHT = ${REAL_WT_VAL}"
+
+# -------------------- STAGE DATA TO SCRATCH --------------------
+DATA_SRC="/home/pnt8/workspace/dressing_sim_ws/diffusion_policy/diffusion_policy/data/sim2real"
+DATA_DST=/scratch/pnt8/dressing_demos/
+OUTPUT_DST=~/workspace/dressing_sim_ws/diffusion_policy/data/outputs/${RUN_NAME}
+
+mkdir -p "$(dirname ${OUTPUT_DST})"
+mkdir -p ${DATA_DST}
+
+cp -r ${DATA_SRC} ${DATA_DST}
+
+cd ~/workspace/dressing_sim_ws/diffusion_policy
+echo "Working directory: $(pwd)"
+
+python train.py \
+  --config-name=train_diffusion_unet_real_lowdim_workspace_finetune \
+  name=${RUN_NAME} \
+  hydra.job.num=${SLURM_ARRAY_TASK_ID} \
+  dataloader.num_workers=8 \
+  optimizer.lr=${LR} \
+  training.num_epochs=${EPOCHS} \
+  training.resume=True \
+  task.dataset.zarr_configs.0.max_train_episodes=${SIM_EP_VAL} \
+  task.dataset.zarr_configs.0.sampling_weight=${SIM_WT_VAL} \
+  task.dataset.zarr_configs.1.sampling_weight=${REAL_WT_VAL}
+
+echo "✅ Job ${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID} completed at $(date)"
