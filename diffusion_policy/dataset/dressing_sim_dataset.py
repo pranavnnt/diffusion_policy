@@ -26,6 +26,8 @@ class DressingSimDataset(BaseLowdimDataset):
             obs_eef_target=False,
             action_key='action',
             use_manual_normalizer=False,
+            use_domain_encoding=True,
+            domain_encoding_dim=2,
             seed=42,
             val_ratio=0.0,
             upsampled=True,
@@ -53,6 +55,8 @@ class DressingSimDataset(BaseLowdimDataset):
         self.obs_key = obs_key
         self.action_key = action_key
         self.use_manual_normalizer = use_manual_normalizer
+        self.use_domain_encoding = use_domain_encoding
+        self.domain_encoding_dim = domain_encoding_dim
         self.train_mask = train_mask
         self.obs_eef_target = obs_eef_target
         self.horizon = horizon
@@ -98,7 +102,7 @@ class DressingSimDataset(BaseLowdimDataset):
             sample: Dictionary containing raw observations and actions
             
         Returns:
-            Dictionary with processed 'obs' and 'action' arrays
+            Dictionary with processed 'obs' and 'action' arrays, and optionally 'domain_encoding'
         """
         obs = sample[self.obs_key]  # shape [T, 37]
         act = sample[self.action_key]  # shape [T, D_a]
@@ -120,10 +124,18 @@ class DressingSimDataset(BaseLowdimDataset):
         obs_scaled = scale_sim_obs(obs_filtered)
         act_scaled = scale_sim_action(act_trimmed)
 
-        return {
+        data = {
             'obs': obs_scaled,
             'action': act_scaled,
         }
+
+        # Add domain encoding for sim data: [1, 0]
+        if self.use_domain_encoding:
+            domain_encoding = np.zeros(self.domain_encoding_dim, dtype=np.float32)
+            domain_encoding[0] = 1.0  # First position is 1 for sim
+            data['domain_encoding'] = domain_encoding
+
+        return data
 
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
         """Get a single training sample with optional upsampling and noise augmentation.
@@ -132,7 +144,7 @@ class DressingSimDataset(BaseLowdimDataset):
             idx: Sample index
             
         Returns:
-            Dictionary containing torch tensors for 'obs' and 'action'
+            Dictionary containing torch tensors for 'obs', 'action', and optionally 'domain_encoding'
         """
         # Sample sequence from replay buffer
         raw_sample = self.sampler.sample_sequence(idx)
@@ -154,4 +166,9 @@ class DressingSimDataset(BaseLowdimDataset):
         
         # Convert to torch tensors
         torch_data = dict_apply(data, torch.from_numpy)
+        
+        # Ensure domain_encoding is float32
+        if self.use_domain_encoding:
+            torch_data['domain_encoding'] = torch_data['domain_encoding'].float()
+
         return torch_data
