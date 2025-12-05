@@ -24,6 +24,7 @@ class DiffusionUnetLowdimPolicy(BaseLowdimPolicy):
             obs_as_global_cond=False,
             pred_action_steps_only=False,
             oa_step_convention=False,
+            domain_encoding_dim=0,
             # parameters passed to step
             **kwargs):
         super().__init__()
@@ -49,7 +50,15 @@ class DiffusionUnetLowdimPolicy(BaseLowdimPolicy):
         self.obs_as_global_cond = obs_as_global_cond
         self.pred_action_steps_only = pred_action_steps_only
         self.oa_step_convention = oa_step_convention
+        self.domain_encoding_dim = domain_encoding_dim
         self.kwargs = kwargs
+
+        if self.domain_encoding_dim > 0:
+            self.use_domain_encoding = True
+        else:
+            self.use_domain_encoding = False
+
+        print("In policy file, use_domain_encoding:", self.use_domain_encoding)
 
         if num_inference_steps is None:
             num_inference_steps = noise_scheduler.config.num_train_timesteps
@@ -129,6 +138,12 @@ class DiffusionUnetLowdimPolicy(BaseLowdimPolicy):
         elif self.obs_as_global_cond:
             # condition throught global feature
             global_cond = nobs[:,:To].reshape(nobs.shape[0], -1)
+            # incorporate one-hot encoding
+            if self.use_domain_encoding:
+                assert 'domain_encoding' in obs_dict, f"obs_dict only contains keys {obs_dict.keys()}"
+                domain_encoding = obs_dict['domain_encoding'].to(self.device)
+                global_cond = torch.cat([global_cond, domain_encoding], dim=-1)
+
             shape = (B, T, Da)
             if self.pred_action_steps_only:
                 shape = (B, self.n_action_steps, Da)
@@ -183,7 +198,10 @@ class DiffusionUnetLowdimPolicy(BaseLowdimPolicy):
     def compute_loss(self, batch):
         # normalize input
         assert 'valid_mask' not in batch
-        nbatch = self.normalizer.normalize(batch)
+        # do NOT normalize domain_encoding
+        nbatch = self.normalizer.normalize({k:v for k,v in batch.items() if k!='domain_encoding'})
+        if self.use_domain_encoding:
+            nbatch['domain_encoding'] = batch['domain_encoding']
         obs = nbatch['obs']
         action = nbatch['action']
 
@@ -196,8 +214,13 @@ class DiffusionUnetLowdimPolicy(BaseLowdimPolicy):
             local_cond = obs
             local_cond[:,self.n_obs_steps:,:] = 0
         elif self.obs_as_global_cond:
-            global_cond = obs[:,:self.n_obs_steps,:].reshape(
-                obs.shape[0], -1)
+            global_cond = obs[:,:self.n_obs_steps,:].reshape(obs.shape[0], -1)
+            # incorporate one-hot encoding
+            if self.use_domain_encoding:
+                assert 'domain_encoding' in batch, f"batch only contains keys {batch.keys()}"
+                domain_encoding = batch['domain_encoding'].to(self.device)
+                global_cond = torch.cat([global_cond, domain_encoding], dim=-1)
+
             if self.pred_action_steps_only:
                 To = self.n_obs_steps
                 start = To

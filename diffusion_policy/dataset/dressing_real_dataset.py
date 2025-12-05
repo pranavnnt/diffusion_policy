@@ -38,6 +38,7 @@ class DressingRealDataset(BaseLowdimDataset):
         include_datasets: Optional[List[str]] = None,
         use_domain_encoding: bool = True,
         force_bins_path: Optional[str] = "/home/pnt8/workspace/dressing_sim_ws/diffusion_policy/diffusion_policy/data/real/real_force_bins_n10.npz",
+        domain_encoding_dim: int = 2,
         seed: int = 42
     ):
         super().__init__()
@@ -51,6 +52,9 @@ class DressingRealDataset(BaseLowdimDataset):
         self.action_key = action_key
         self.include_datasets = include_datasets
         self.use_domain_encoding = use_domain_encoding
+        self.domain_encoding_dim = domain_encoding_dim
+
+        print("Domain encoding set to: ", self.use_domain_encoding)
         
         # Force binning setup
         self.force_bins = None
@@ -250,6 +254,8 @@ class DressingRealDataset(BaseLowdimDataset):
         val_set.zarr_paths = [self.zarr_paths[index]]
         val_set.upsample_multipliers = [self.upsample_multipliers[index]]
         val_set.sample_probabilities = np.array([1.0])
+        val_set.domain_encoding_dim = self.domain_encoding_dim  # ADD THIS
+        val_set._original_dataset_idx = index  # ADD THIS - track which dataset (0=sim, 1=real)
 
         # Copy force binning configuration
         val_set.force_bins = self.force_bins
@@ -403,7 +409,9 @@ class DressingRealDataset(BaseLowdimDataset):
         obs_scaled = obs_trimmed = obs
         act_scaled = act_trimmed = act[:, [0, 2]]
         
-        if self.dataset_names[sampler_idx].startswith("sim"):
+        local_dataset_name = self.dataset_names[sampler_idx]
+
+        if local_dataset_name.startswith("sim"):
             # Simulation data: apply full transformation pipeline
             obs_trimmed = filter_sim_obs(obs)
             obs_scaled = scale_sim_obs(obs_trimmed)
@@ -422,10 +430,12 @@ class DressingRealDataset(BaseLowdimDataset):
         }
 
         if self.use_domain_encoding:
-            # Domain encoding is one-hot
-            data['domain_encoding'] = np.zeros(self.num_datasets).astype(np.float32)
-            data['domain_encoding'][sampler_idx] = 1
-
+            # Hard-code domain encodings
+            if local_dataset_name.startswith("sim"):
+                data['domain_encoding'] = np.array([1.0, 0.0], dtype=np.float32)
+            else:
+                data['domain_encoding'] = np.array([0.0, 1.0], dtype=np.float32)
+    
         return data
 
     def _validate_zarr_configs(self, zarr_configs: List[Dict]) -> None:
@@ -495,6 +505,7 @@ class DressingRealDataset(BaseLowdimDataset):
         sampler = self.samplers[sampler_idx]
         sample = sampler.sample_sequence(local_idx)
 
+        # Use original dataset index if this is a validation set
         data = self._sample_to_data(sample, sampler_idx)
         data = add_noise(data)
         
