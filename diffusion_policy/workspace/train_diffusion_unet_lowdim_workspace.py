@@ -250,7 +250,8 @@ class TrainDiffusionUnetLowdimWorkspace(BaseWorkspace):
                     with torch.no_grad():
                         # sample trajectory from training set, and evaluate difference
                         batch = train_sampling_batch
-                        obs_dict = {'obs': batch['obs']}
+                        obs_dict = {'obs': batch['obs'],
+                                    'domain_encoding': batch.get('domain_encoding', None)}
                         gt_action = batch['action']
                         
                         result = policy.predict_action(obs_dict)
@@ -286,7 +287,8 @@ class TrainDiffusionUnetLowdimWorkspace(BaseWorkspace):
                             obs = batch['obs']
                             if obs.ndim == 2:  # (B, Do) -> (B, 1, Do)
                                 obs = obs.unsqueeze(1)
-                            obs_dict = {'obs': obs}
+                            obs_dict = {'obs': obs,
+                                       'domain_encoding': batch.get('domain_encoding', None)}
                 
                             gt_action = batch['action']
                 
