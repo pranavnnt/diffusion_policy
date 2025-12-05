@@ -221,14 +221,14 @@ class DressingRealDataset(BaseLowdimDataset):
 
     def get_normalizer(self, mode: str = 'limits', **kwargs) -> Optional[LinearNormalizer]:
         """Compute normalizer from simulation data.
-        
+
         For fine-tuning with real data only, returns None (normalizer should be 
         loaded from pretrained checkpoint). For datasets with simulation data,
         computes normalizer statistics from transformed simulation observations.
-        
+
         Args:
             mode: Normalization mode ('limits' supported)
-            
+
         Returns:
             LinearNormalizer if sim data exists, None otherwise
         """
@@ -270,6 +270,16 @@ class DressingRealDataset(BaseLowdimDataset):
                 normalizer = LinearNormalizer()
                 normalizer.fit(data=data, last_n_dims=1, mode=mode, **kwargs)
 
+                # Override last 3 dimensions to identity normalization for sim data
+                obs_normalizer = normalizer['obs']
+                params = obs_normalizer.params_dict
+
+                # Set identity normalization for last 3 channels (including force)
+                if 'scale' in params:
+                    params['scale'][..., -3:] = 1.0
+                if 'offset' in params:
+                    params['offset'][..., -3:] = 0.0
+
                 # Update mins and maxes
                 for key in ['obs', 'action']:
                     _max = normalizer[key].params_dict.input_stats.max
@@ -286,6 +296,15 @@ class DressingRealDataset(BaseLowdimDataset):
         assert len(input_stats) > 0, "No simulation datasets found for computing normalizer"
         normalizer = LinearNormalizer()
         normalizer.fit_from_input_stats(input_stats_dict=input_stats)
+
+        # Apply identity normalization to last 3 dimensions again after fit_from_input_stats
+        obs_normalizer = normalizer['obs']
+        params = obs_normalizer.params_dict
+        if 'scale' in params:
+            params['scale'][..., -3:] = 1.0
+        if 'offset' in params:
+            params['offset'][..., -3:] = 0.0
+
         return normalizer
 
     def get_sample_probabilities(self) -> np.ndarray:
