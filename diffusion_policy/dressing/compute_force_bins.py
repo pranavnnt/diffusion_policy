@@ -6,6 +6,7 @@ Edit the parameters below and run:
 """
 
 import numpy as np
+import argparse
 import zarr
 from pathlib import Path
 import sys
@@ -18,14 +19,17 @@ from sim2real_transforms import filter_sim_obs, scale_sim_obs
 # ============================================================================
 # PARAMETERS - EDIT THESE
 # ============================================================================
-INPUT_ZARR = '/home/pnt8/workspace/dressing_sim_ws/diffusion_policy/diffusion_policy/data/sim/halton_base_dagger_rd2_x1_aligned_upsampled_x4.zarr'
-OUTPUT_BINS = '/home/pnt8/workspace/dressing_sim_ws/diffusion_policy/diffusion_policy/data/sim/sim_force_bins_n10.npz'
+INPUT_ZARR = '/home/pnt8/workspace/dressing_sim_ws/diffusion_policy/diffusion_policy/data/sim2real/real/round3+4_data_green_tee_upsampled_x2.zarr'
+OUTPUT_BINS = '/home/pnt8/workspace/dressing_sim_ws/diffusion_policy/diffusion_policy/dressing/real_force_bins_n10.npz'
 NUM_BINS = 10
 OBS_KEY = 'data/state'
 # ============================================================================
 
 
-def main():
+def main(mode: str):
+
+    print("Mode: ", mode)
+
     print(f"Loading zarr dataset from: {INPUT_ZARR}")
     input_zarr = zarr.open(INPUT_ZARR, mode='r')
     
@@ -41,8 +45,11 @@ def main():
     
     # Filter and scale
     print("\nFiltering and scaling observations...")
-    obs_filtered = filter_sim_obs(obs_data)
-    obs_scaled = scale_sim_obs(obs_filtered)
+    if mode == "sim":
+        obs_filtered = filter_sim_obs(obs_data)
+        obs_scaled = scale_sim_obs(obs_filtered)
+    else:
+        obs_scaled = obs_data  # Assuming real data is already scaled appropriately
     
     # Extract force from last 3 dimensions
     force_vec = obs_scaled[:, -3:]
@@ -107,4 +114,17 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--sim", action="store_true")
+    parser.add_argument("--real", action="store_true")
+    args = parser.parse_args()
+
+    if (args.sim and args.real) or (not args.sim and not args.real):
+        parser.error("You must specify exactly one of --sim or --real")
+
+    MODE = "sim" if args.sim else "real"
+    print(f"MODE: {MODE}")
+
+    main(mode=MODE)

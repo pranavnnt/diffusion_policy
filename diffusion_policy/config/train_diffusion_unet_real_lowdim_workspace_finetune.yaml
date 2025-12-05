@@ -111,7 +111,7 @@ training:
   tqdm_interval_sec: 1.0
 
   # config/finetune_real.yaml
-  pretrained_checkpoint: /home/pnt8/workspace/dressing_sim_ws/diffusion_policy/data/outputs/2025.11.20_01.04.54_new_aligned_dataset_x1_first_arm_env_lowdim/checkpoints/latest.ckpt
+  pretrained_checkpoint: /home/pnt8/workspace/dressing_sim_ws/diffusion_policy/data/outputs/2025.12.04_17.08.51_sim_sota_epoch30_force_binned_dressing_sim/checkpoints/latest.ckpt
   resume: False  # False for initial finetuning
 
 logging:
