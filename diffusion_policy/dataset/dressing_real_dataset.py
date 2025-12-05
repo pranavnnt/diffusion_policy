@@ -52,6 +52,8 @@ class DressingRealDataset(BaseLowdimDataset):
         self.include_datasets = include_datasets
         self.use_domain_encoding = use_domain_encoding
         self.domain_encoding_dim = domain_encoding_dim
+
+        print("Domain encoding set to: ", self.use_domain_encoding)
         
         # Load in all the zarr datasets
         self.dataset_names = []

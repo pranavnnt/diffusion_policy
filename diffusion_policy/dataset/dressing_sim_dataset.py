@@ -63,6 +63,8 @@ class DressingSimDataset(BaseLowdimDataset):
         self.pad_before = pad_before
         self.pad_after = pad_after
 
+        print("Domain encoding set to: ", self.use_domain_encoding)
+
         self.upsampled = upsampled
         self.upsample_multiplier = upsample_multiplier
 

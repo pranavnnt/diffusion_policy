@@ -50,7 +50,7 @@ policy:
   action_dim: ${action_dim}
   n_action_steps: ${eval:'${n_action_steps}+${n_latency_steps}'}
   n_obs_steps: ${n_obs_steps}
-  domain_encoding_dim: ${task.dataset.domain_encoding_dim}
+  domain_encoding_dim: "${eval: ${task.dataset.domain_encoding_dim} if ${task.dataset.use_domain_encoding} else 0}"
   num_inference_steps: 100
   obs_as_local_cond: ${obs_as_local_cond}
   obs_as_global_cond: ${obs_as_global_cond}
@@ -112,7 +112,7 @@ training:
   tqdm_interval_sec: 1.0
 
   # config/finetune_real.yaml
-  pretrained_checkpoint: /home/pnt8/workspace/dressing_sim_ws/diffusion_policy/data/outputs/2025.12.05_01.30.31_sim_with_domain_encoding_dim2_zero_force_dressing_sim/checkpoints/latest.ckpt
+  pretrained_checkpoint: /home/pnt8/workspace/dressing_sim_ws/diffusion_policy/data/outputs/2025.12.05_00.47.41_sim_with_domain_encoding_dim2_dressing_sim/checkpoints/latest.ckpt
   resume: False  # False for initial finetuning
 
 logging:
