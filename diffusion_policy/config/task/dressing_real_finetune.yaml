@@ -11,8 +11,10 @@ dataset:
   pad_before: ${eval:'${n_obs_steps}-1'}
   pad_after: ${eval:'${n_action_steps}-1'}
   seed: 42
-  num_datasets: 2  # Keep sim for normalization!
+  num_datasets: 2
   include_datasets: ["sim", "real_first_arm"]
+  use_domain_encoding: True  # Already there
+  domain_encoding_dim: 2
   zarr_configs:
   # Keep sim dataset ONLY for computing normalizer
   - path: /scratch/pnt8/dressing_demos/sim2real/sim/halton_base_dagger_rd2_x1_aligned_upsampled_x4.zarr

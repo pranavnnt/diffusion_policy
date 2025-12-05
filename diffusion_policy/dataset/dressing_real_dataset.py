@@ -37,6 +37,7 @@ class DressingRealDataset(BaseLowdimDataset):
         num_datasets: int = 1,
         include_datasets: Optional[List[str]] = None,
         use_domain_encoding: bool = True,
+        domain_encoding_dim: int = 0,
         seed: int = 42
     ):
         super().__init__()
@@ -50,6 +51,7 @@ class DressingRealDataset(BaseLowdimDataset):
         self.action_key = action_key
         self.include_datasets = include_datasets
         self.use_domain_encoding = use_domain_encoding
+        self.domain_encoding_dim = domain_encoding_dim
         
         # Load in all the zarr datasets
         self.dataset_names = []
