@@ -233,7 +233,7 @@ class DressingSimDataset(BaseLowdimDataset):
         data = self._sample_to_data(raw_sample)
         
         # Add noise augmentation
-        data = add_noise(data)
+        data = add_noise(data, "sim")
         
         # Apply force binning (if enabled) - AFTER noise
         data = self.apply_force_binning(data)

@@ -505,9 +505,12 @@ class DressingRealDataset(BaseLowdimDataset):
         sampler = self.samplers[sampler_idx]
         sample = sampler.sample_sequence(local_idx)
 
+        # determine
+        dataset_name = self.dataset_names[sampler_idx]
+
         # Use original dataset index if this is a validation set
         data = self._sample_to_data(sample, sampler_idx)
-        data = add_noise(data)
+        data = add_noise(data, dataset_name)
         
         # Apply force binning (if enabled) - AFTER noise
         data = self.apply_force_binning(data)
