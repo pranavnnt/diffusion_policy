@@ -14,7 +14,7 @@ SCALING_FACTORS = {
     'force_vec': 1,           # applied to 3 dimensions
 }
 
-NOISE_STD = {
+SIM_NOISE_STD = {
     'rel_pos': np.array([1, 1], dtype=np.float32),
     'vel': np.array([0.5, 0.5], dtype=np.float32),
     'cloth_rel_pos_x': np.array([1, 1, 1, 1, 1], dtype=np.float32),
@@ -22,6 +22,16 @@ NOISE_STD = {
     'cloth_spread': np.array([2], dtype=np.float32),
     'hand_spread': np.array([1], dtype=np.float32),
     'force_vec': np.array([2, 2, 2], dtype=np.float32),
+}
+
+REAL_NOISE_STD = {
+    'rel_pos': np.array([0.05, 0.05], dtype=np.float32),
+    'vel': np.array([0.01, 0.01], dtype=np.float32),
+    'cloth_rel_pos_x': np.array([0.02, 0.02, 0.02, 0.02, 0.02], dtype=np.float32),
+    'cloth_rel_pos_z': np.array([0.05, 0.05], dtype=np.float32),
+    'cloth_spread': np.array([0.05], dtype=np.float32),
+    'hand_spread': np.array([0.02], dtype=np.float32),
+    'force_vec': np.array([0.1, 0.1, 0.1], dtype=np.float32),
 }
 
 
@@ -200,7 +210,7 @@ def scale_sim_action(action_trimmed: np.ndarray) -> np.ndarray:
     return action_trimmed / scaling_vector
 
 
-def _generate_noise(timesteps: int) -> np.ndarray:
+def _generate_noise(timesteps: int, noise_std) -> np.ndarray:
     """Generate noise for observations.
     
     Args:
@@ -210,19 +220,24 @@ def _generate_noise(timesteps: int) -> np.ndarray:
         Noise array of shape (T, 16)
     """
     # Independent noise per timestep
-    rel_pos_noise = np.random.normal(0, NOISE_STD['rel_pos'], size=(timesteps, 2))
-    vel_noise = np.random.normal(0, NOISE_STD['vel'], size=(timesteps, 2))
-    cloth_rel_pos_z_noise = np.random.normal(0, NOISE_STD['cloth_rel_pos_z'], size=(timesteps, 2))
-    cloth_spread_noise = np.random.normal(0, NOISE_STD['cloth_spread'], size=(timesteps, 1))
-    force_vec_noise = np.random.normal(0, NOISE_STD['force_vec'], size=(timesteps, 3))
+    vel_noise = np.random.normal(0, noise_std['vel'], size=(timesteps, 2))
+    cloth_rel_pos_z_noise = np.random.normal(0, noise_std['cloth_rel_pos_z'], size=(timesteps, 2))
+    cloth_spread_noise = np.random.normal(0, noise_std['cloth_spread'], size=(timesteps, 1))
+    force_vec_noise = np.random.normal(0, noise_std['force_vec'], size=(timesteps, 3))
     
     # Shared noise across all timesteps (one sample per episode)
+
+    rel_pos_noise = np.tile(
+        np.random.normal(0, noise_std['rel_pos'], size=(1, 2)),
+        (timesteps, 1)
+    )
+
     cloth_rel_pos_x_noise = np.tile(
-        np.random.normal(0, NOISE_STD['cloth_rel_pos_x']),
+        np.random.normal(0, noise_std['cloth_rel_pos_x']),
         (timesteps, 1)
     )
     hand_spread_noise = np.tile(
-        np.random.normal(0, NOISE_STD['hand_spread']),
+        np.random.normal(0, noise_std['hand_spread']),
         (timesteps, 1)
     )
     
@@ -237,7 +252,7 @@ def _generate_noise(timesteps: int) -> np.ndarray:
     ], axis=1)
 
 
-def add_noise(obs: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
+def add_noise(obs: Dict[str, np.ndarray], dataset_name: str) -> Dict[str, np.ndarray]:
     """Add scaled noise to observations (works for both scaled sim and real observations).
     
     Args:
@@ -246,11 +261,16 @@ def add_noise(obs: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
     Returns:
         Modified observation dictionary with noise added
     """
+
     obs_vec = obs["obs"]
     timesteps = obs_vec.shape[0]
     
-    noise = _generate_noise(timesteps)
-    scaled_noise = scale_noise(noise)
+    if dataset_name.startswith("sim"):
+        noise = _generate_noise(timesteps, SIM_NOISE_STD)
+        scaled_noise = scale_noise(noise)
+    else:
+        noise = _generate_noise(timesteps, REAL_NOISE_STD)
+        scaled_noise = noise
     
     obs["obs"] = obs_vec + scaled_noise
     return obs
