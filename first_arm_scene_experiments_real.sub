@@ -12,7 +12,7 @@
 #SBATCH --get-user-env
 #SBATCH --gres=gpu:nvidia_rtx_6000_ada_generation:1
 #SBATCH --exclude=galhotra-compute-01,thickstun-compute-01
-#SBATCH --array=0-11   # 3 sim_episodes × 4 sim_weights = 12 jobs
+#SBATCH --array=0-14   # 3 sim_episodes × 5 sim_weights = 15 jobs
 
 export SLURM_ARRAY_TASK_ID=${SLURM_ARRAY_TASK_ID:-0}
 export HYDRA_FULL_ERROR=1
@@ -24,9 +24,9 @@ source "$(conda info --base)/etc/profile.d/conda.sh"
 conda activate robodiff
 
 # -------------------- PARAMETER GRID --------------------
-SIM_EPISODES=(300 400 500)           # Number of sim episodes to use
-SIM_WEIGHTS=(0.05 0.1 0.2 0.3)        # Sim sampling weight (real gets 1-weight)
-REAL_WEIGHTS=(0.95 0.9 0.8 0.7)       # Real sampling weight (for reference)
+SIM_EPISODES=(300 400 500)              # Number of sim episodes to use
+SIM_WEIGHTS=(0 0.05 0.1 0.2 0.3)        # Sim sampling weight (real gets 1-weight)
+REAL_WEIGHTS=(1 0.95 0.9 0.8 0.7)       # Real sampling weight (for reference)
 LR=1e-5                          # Fixed learning rate
 EPOCHS=50                        # Fixed epochs
 

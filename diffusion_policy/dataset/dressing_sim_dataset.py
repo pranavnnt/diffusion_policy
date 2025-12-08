@@ -174,7 +174,7 @@ class DressingSimDataset(BaseLowdimDataset):
         data = self._sample_to_data(raw_sample)
         
         # Add noise augmentation
-        data = add_noise(data)
+        data = add_noise(data, "sim")
         
         # Convert to torch tensors
         torch_data = dict_apply(data, torch.from_numpy)
