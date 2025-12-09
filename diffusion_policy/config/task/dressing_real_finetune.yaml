@@ -30,7 +30,6 @@ dataset:
     name: real_first_arm
     max_train_episodes: null
     sampling_weight: 0.8  # 100% real arm 1
-    sampling_weight: 0.8  # 100% real arm 1
     val_ratio: 0.1
     upsampled: True
     upsample_multiplier: 2
