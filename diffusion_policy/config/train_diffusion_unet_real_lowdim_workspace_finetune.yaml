@@ -114,6 +114,9 @@ training:
   pretrained_checkpoint: /home/pnt8/workspace/dressing_sim_ws/diffusion_policy/data/outputs/2025.11.20_01.04.54_new_aligned_dataset_x1_first_arm_env_lowdim/checkpoints/latest.ckpt
   resume: False  # False for initial finetuning
 
+eval:
+  ckpt: /home/dressing/workspace/bimanual_ws/src/bimanual_dressing/src/dressing_policies/weights/2025.12.06_17.54.57_dressing_real_cotrain_simep500_simwt0_2_dressing_real_first_arm_finetune/checkpoints/latest.ckpt
+
 logging:
   project: dressing_real
   resume: True
