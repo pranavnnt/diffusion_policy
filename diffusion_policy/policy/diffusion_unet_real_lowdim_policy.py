@@ -53,6 +53,13 @@ class DiffusionUnetRealLowdimPolicy(BaseLowdimPolicy):
         self.domain_encoding_dim = domain_encoding_dim
         self.kwargs = kwargs
 
+        if self.domain_encoding_dim > 0:
+            self.use_domain_encoding = True
+        else:
+            self.use_domain_encoding = False
+
+        print("In policy file, use_domain_encoding:", self.use_domain_encoding)
+
         if num_inference_steps is None:
             num_inference_steps = noise_scheduler.config.num_train_timesteps
         self.num_inference_steps = num_inference_steps
@@ -132,7 +139,7 @@ class DiffusionUnetRealLowdimPolicy(BaseLowdimPolicy):
             # condition throught global feature
             global_cond = nobs[:,:To].reshape(nobs.shape[0], -1)
             # incorporate one-hot encoding
-            if self.domain_encoding_dim > 0:
+            if self.use_domain_encoding:
                 assert 'domain_encoding' in obs_dict, f"obs_dict only contains keys {obs_dict.keys()}"
                 domain_encoding = obs_dict['domain_encoding'].to(self.device)
                 global_cond = torch.cat([global_cond, domain_encoding], dim=-1)
@@ -193,7 +200,8 @@ class DiffusionUnetRealLowdimPolicy(BaseLowdimPolicy):
         assert 'valid_mask' not in batch
         # do NOT normalize domain_encoding
         nbatch = self.normalizer.normalize({k:v for k,v in batch.items() if k!='domain_encoding'})
-        nbatch['domain_encoding'] = batch['domain_encoding']
+        if self.use_domain_encoding:
+            nbatch['domain_encoding'] = batch['domain_encoding']
         obs = nbatch['obs']
         action = nbatch['action']
 
@@ -208,7 +216,7 @@ class DiffusionUnetRealLowdimPolicy(BaseLowdimPolicy):
         elif self.obs_as_global_cond:
             global_cond = obs[:,:self.n_obs_steps,:].reshape(obs.shape[0], -1)
             # incorporate one-hot encoding
-            if self.domain_encoding_dim > 0:
+            if self.use_domain_encoding:
                 assert 'domain_encoding' in batch, f"batch only contains keys {batch.keys()}"
                 domain_encoding = batch['domain_encoding'].to(self.device)
                 global_cond = torch.cat([global_cond, domain_encoding], dim=-1)

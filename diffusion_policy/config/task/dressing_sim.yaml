@@ -13,7 +13,9 @@ dataset:
   pad_after: ${eval:'${n_action_steps}-1'}
   obs_eef_target: ${task.obs_eef_target}
   use_manual_normalizer: False
+  use_domain_encoding: False    # disabled by default 
+  domain_encoding_dim: 2
   seed: 42
   val_ratio: 0.02
   upsampled: True
-  upsample_multiplier: 4 
+  upsample_multiplier: 4

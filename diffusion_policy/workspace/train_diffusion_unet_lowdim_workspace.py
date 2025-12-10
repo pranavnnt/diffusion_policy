@@ -250,7 +250,8 @@ class TrainDiffusionUnetLowdimWorkspace(BaseWorkspace):
                     with torch.no_grad():
                         # sample trajectory from training set, and evaluate difference
                         batch = train_sampling_batch
-                        obs_dict = {'obs': batch['obs']}
+                        obs_dict = {'obs': batch['obs'],
+                                    'domain_encoding': batch.get('domain_encoding', None)}
                         gt_action = batch['action']
                         
                         result = policy.predict_action(obs_dict)
@@ -271,7 +272,48 @@ class TrainDiffusionUnetLowdimWorkspace(BaseWorkspace):
                         del result
                         del pred_action
                         del mse
+
+                # run validation action MSE (sim dataset)
+                if (self.epoch % cfg.training.sample_every) == 0:
+                    with torch.no_grad():
+                        # get first batch from val_dataloader
+                        val_iter = iter(val_dataloader)
+                        batch = next(val_iter, None)
+                        if batch is not None:
+                            # move to device
+                            batch = dict_apply(batch, lambda x: x.to(device, non_blocking=True))
                 
+                            # ensure batch has time dimension
+                            obs = batch['obs']
+                            if obs.ndim == 2:  # (B, Do) -> (B, 1, Do)
+                                obs = obs.unsqueeze(1)
+                            obs_dict = {'obs': obs,
+                                       'domain_encoding': batch.get('domain_encoding', None)}
+                
+                            gt_action = batch['action']
+                
+                            # predict action
+                            result = policy.predict_action(obs_dict)
+                            if cfg.pred_action_steps_only:
+                                pred_action = result['action']
+                                start = cfg.n_obs_steps - 1
+                                end = start + cfg.n_action_steps
+                                gt_action = gt_action[:, start:end]
+                            else:
+                                pred_action = result['action_pred']
+                
+                            mse = torch.nn.functional.mse_loss(pred_action, gt_action)
+                            step_log['val_action_mse'] = mse.item()
+
+
+                            # release RAM
+                            del batch
+                            del obs_dict
+                            del gt_action
+                            del result
+                            del pred_action
+                            del mse
+
                 # checkpoint
                 if (self.epoch % cfg.training.checkpoint_every) == 0:
                     # checkpointing

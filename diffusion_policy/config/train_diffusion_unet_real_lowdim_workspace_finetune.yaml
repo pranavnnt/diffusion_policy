@@ -28,7 +28,7 @@ policy:
     _target_: diffusion_policy.model.diffusion.conditional_unet1d.ConditionalUnet1D
     input_dim: "${eval: ${task.action_dim} if ${obs_as_local_cond} or ${obs_as_global_cond} else ${task.obs_dim} + ${task.action_dim}}"
     local_cond_dim: "${eval: ${task.obs_dim} if ${obs_as_local_cond} else None}"
-    global_cond_dim: ${eval:'(${task.obs_dim}*${n_obs_steps}) if ${obs_as_global_cond} else None'}
+    global_cond_dim: "${eval: ${task.obs_dim}*${n_obs_steps}+${policy.domain_encoding_dim} if ${obs_as_global_cond} else None}"
     diffusion_step_embed_dim: 256
     down_dims: [64, 128, 256]
     kernel_size: 5
@@ -50,6 +50,7 @@ policy:
   action_dim: ${action_dim}
   n_action_steps: ${eval:'${n_action_steps}+${n_latency_steps}'}
   n_obs_steps: ${n_obs_steps}
+  domain_encoding_dim: "${eval: ${task.dataset.domain_encoding_dim} if ${task.dataset.use_domain_encoding} else 0}"
   num_inference_steps: 100
   obs_as_local_cond: ${obs_as_local_cond}
   obs_as_global_cond: ${obs_as_global_cond}
@@ -111,7 +112,7 @@ training:
   tqdm_interval_sec: 1.0
 
   # config/finetune_real.yaml
-  pretrained_checkpoint: /home/pnt8/workspace/dressing_sim_ws/diffusion_policy/data/outputs/2025.11.20_01.04.54_new_aligned_dataset_x1_first_arm_env_lowdim/checkpoints/latest.ckpt
+  pretrained_checkpoint: /home/pnt8/workspace/dressing_sim_ws/diffusion_policy/data/outputs/2025.12.05_18.43.05_sim_no_domain_encoding_dressing_sim/checkpoints/latest.ckpt
   resume: False  # False for initial finetuning
 
 eval:
