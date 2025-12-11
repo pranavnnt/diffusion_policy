@@ -19,3 +19,4 @@ dataset:
   val_ratio: 0.02
   upsampled: True
   upsample_multiplier: 4
+  force_bins_path: "/home/pnt8/workspace/dressing_sim_ws/diffusion_policy/diffusion_policy/data/sim/sim_force_bins_n10.npz"  

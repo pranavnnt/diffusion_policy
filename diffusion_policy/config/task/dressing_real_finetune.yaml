@@ -18,6 +18,7 @@ dataset:
   zarr_configs:
   # Keep sim dataset ONLY for computing normalizer
   - path: /scratch/pnt8/dressing_demos/sim2real/sim/halton_base_dagger_rd2_x1_aligned_upsampled_x4.zarr
+    force_bins_path: /home/pnt8/workspace/dressing_sim_ws/diffusion_policy/diffusion_policy/data/sim/sim_force_bins_n10.npz
     name: sim
     max_train_episodes: 400  
     sampling_weight: 0.2   
@@ -26,7 +27,8 @@ dataset:
     upsample_multiplier: 4
     domain_encoding: [1, 0]
   # Real datasets get all the training weight
-  - path: /scratch/pnt8/dressing_demos/sim2real/real/round3+4_data_green_tee_upsampled_x2.zarr    
+  - path: /scratch/pnt8/dressing_demos/sim2real/real/round3+4_data_green_tee_upsampled_x2.zarr
+    force_bins_path: /home/pnt8/workspace/dressing_sim_ws/diffusion_policy/diffusion_policy/data/real/real_force_bins_n10.npz   
     name: real_first_arm
     max_train_episodes: null
     sampling_weight: 0.8  # 100% real arm 1

@@ -37,7 +37,6 @@ class DressingRealDataset(BaseLowdimDataset):
         num_datasets: int = 1,
         include_datasets: Optional[List[str]] = None,
         use_domain_encoding: bool = True,
-        force_bins_path: Optional[str] = "/home/pnt8/workspace/dressing_sim_ws/diffusion_policy/diffusion_policy/data/real/real_force_bins_n10.npz",
         domain_encoding_dim: int = 2,
         seed: int = 42
     ):
@@ -56,12 +55,6 @@ class DressingRealDataset(BaseLowdimDataset):
 
         print("Domain encoding set to: ", self.use_domain_encoding)
         
-        # Force binning setup
-        self.force_bins = None
-        self.force_bin_edges = None
-        if force_bins_path is not None:
-            self._load_force_bins(force_bins_path)
-        
         # Load in all the zarr datasets
         self.dataset_names = []
         self.replay_buffers = []
@@ -71,6 +64,9 @@ class DressingRealDataset(BaseLowdimDataset):
         self.sample_probabilities = []
         self.zarr_paths = []
         self.upsample_multipliers = []
+
+        self.force_bins = []
+        self.force_bin_edges = []
 
         print(f"Datasets included: {self.include_datasets}")
 
@@ -101,7 +97,7 @@ class DressingRealDataset(BaseLowdimDataset):
         print(f"  Y-axis bins: {self.force_bin_edges[1]}")
         print(f"  Z-axis bins: {self.force_bin_edges[2]}")
     
-    def discretize_force(self, force_vec):
+    def discretize_force(self, force_vec, dataset_idx):
         """
         Discretize force vector into bins.
         
@@ -111,23 +107,23 @@ class DressingRealDataset(BaseLowdimDataset):
         Returns:
             force_bins_indices: shape [T, 3] - bin indices (0 to force_bins-1)
         """
-        assert self.force_bins is not None, "force_bins must be set to discretize force"
-        assert self.force_bin_edges is not None, "force_bin_edges not loaded"
+        assert self.force_bins[dataset_idx] is not None, "force_bins must be set to discretize force"
+        assert self.force_bin_edges[dataset_idx] is not None, "force_bin_edges not loaded"
         
         T = force_vec.shape[0]
         force_bins_indices = np.zeros((T, 3), dtype=np.int64)
         
         for dim in range(3):
             force_bins_indices[:, dim] = np.searchsorted(
-                self.force_bin_edges[dim], force_vec[:, dim], side='right'
+                self.force_bin_edges[dataset_idx][dim], force_vec[:, dim], side='right'
             )
         
         return force_bins_indices
     
-    def apply_force_binning(self, data):
+    def apply_force_binning(self, data, dataset_idx):
         """Apply force binning to observation after noise has been added."""
-        if self.force_bins is not None:
-            force_bins_indices = self.discretize_force(data['obs'][:, -3:])
+        if self.force_bins[dataset_idx] is not None:
+            force_bins_indices = self.discretize_force(data['obs'][:, -3:], dataset_idx)
             data['obs'] = data['obs'].copy()
             data['obs'][:, -3:] = force_bins_indices.astype(np.float32)
         return data
@@ -149,6 +145,18 @@ class DressingRealDataset(BaseLowdimDataset):
             zarr_path = zarr_config['path']
             max_train_episodes = zarr_config.get('max_train_episodes', None)
             sampling_weight = zarr_config.get('sampling_weight', None)
+
+            # Get force bins
+
+            # In _load_datasets, after loading each replay_buffer:
+            force_bins_path = zarr_config.get('force_bins_path', None)
+            if force_bins_path is not None:
+                force_data = np.load(force_bins_path)
+                self.force_bin_edges.append(force_data['bin_edges'])
+                self.force_bins.append(int(force_data['num_bins']))
+            else:
+                self.force_bin_edges.append(None)
+                self.force_bins.append(None)
 
             # Load replay buffer
             replay_buffer = ReplayBuffer.copy_from_path(
@@ -352,7 +360,7 @@ class DressingRealDataset(BaseLowdimDataset):
             normalizer['obs'].params_dict['scale'][-3:] = 1.0
             
             print("Force binning enabled: force dimensions will not be normalized")
-            print(f"  Bins 0 to {self.force_bins-1} will be used as categorical values")
+            print(f"  Bins 0 to {len(self.force_bins)-1} will be used as categorical values")
         
         return normalizer
 
@@ -513,7 +521,7 @@ class DressingRealDataset(BaseLowdimDataset):
         data = add_noise(data, dataset_name)
         
         # Apply force binning (if enabled) - AFTER noise
-        data = self.apply_force_binning(data)
+        data = self.apply_force_binning(data, sampler_idx)
         
         torch_data = dict_apply(data, torch.from_numpy)
 
