@@ -1,6 +1,6 @@
 name: dressing_sim
 
-obs_dim: 16
+obs_dim: 15
 action_dim: 2
 keypoint_dim: 0
 obs_eef_target: False

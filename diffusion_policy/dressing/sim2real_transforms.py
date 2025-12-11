@@ -21,7 +21,7 @@ SIM_NOISE_STD = {
     'cloth_rel_pos_z': np.array([2, 2], dtype=np.float32),
     'cloth_spread': np.array([2], dtype=np.float32),
     'hand_spread': np.array([1], dtype=np.float32),
-    'force_vec': np.array([2, 2, 2], dtype=np.float32),
+    'force_vec': np.array([2, 2], dtype=np.float32),
 }
 
 REAL_NOISE_STD = {
@@ -31,7 +31,7 @@ REAL_NOISE_STD = {
     'cloth_rel_pos_z': np.array([0.05, 0.05], dtype=np.float32),
     'cloth_spread': np.array([0.05], dtype=np.float32),
     'hand_spread': np.array([0.02], dtype=np.float32),
-    'force_vec': np.array([0.1, 0.1, 0.1], dtype=np.float32),
+    'force_vec': np.array([0.1, 0.1], dtype=np.float32),
 }
 
 
@@ -140,6 +140,9 @@ def filter_sim_obs(obs: np.ndarray) -> np.ndarray:
     )
     
     force_vec = _compute_force_vector(components['force'])
+
+    # remove y component of force
+    force_vec_short = force_vec[:, [0, 2]]
     
     # Concatenate all filtered features
     obs_filtered = np.concatenate([
@@ -151,7 +154,7 @@ def filter_sim_obs(obs: np.ndarray) -> np.ndarray:
         cloth_hand_features['cloth_rel_pos_z'],
         cloth_hand_features['cloth_spread'],
         cloth_hand_features['hand_spread'],
-        force_vec
+        force_vec_short
     ], axis=1)
     
     return obs_filtered
@@ -168,7 +171,7 @@ def _build_scaling_vector() -> np.ndarray:
         *[SCALING_FACTORS['cloth_rel_pos_z']] * 2,
         SCALING_FACTORS['cloth_spread'],
         SCALING_FACTORS['hand_spread'],
-        *[SCALING_FACTORS['force_vec']] * 3
+        *[SCALING_FACTORS['force_vec']] * 2
     ])
 
 
@@ -223,7 +226,7 @@ def _generate_noise(timesteps: int, noise_std) -> np.ndarray:
     vel_noise = np.random.normal(0, noise_std['vel'], size=(timesteps, 2))
     cloth_rel_pos_z_noise = np.random.normal(0, noise_std['cloth_rel_pos_z'], size=(timesteps, 2))
     cloth_spread_noise = np.random.normal(0, noise_std['cloth_spread'], size=(timesteps, 1))
-    force_vec_noise = np.random.normal(0, noise_std['force_vec'], size=(timesteps, 3))
+    force_vec_noise = np.random.normal(0, noise_std['force_vec'], size=(timesteps, 2))
     
     # Shared noise across all timesteps (one sample per episode)
 

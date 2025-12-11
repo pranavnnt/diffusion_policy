@@ -115,8 +115,8 @@ class DressingSimDataset(BaseLowdimDataset):
 
         # Filter observations to extract relevant features
         obs_filtered = filter_sim_obs(obs)
-        assert obs_filtered.shape[1] == 16, (
-            f"Expected filtered obs to have 16 dimensions, got {obs_filtered.shape[1]}"
+        assert obs_filtered.shape[1] == 15, (
+            f"Expected filtered obs to have 15 dimensions, got {obs_filtered.shape[1]}"
         )
 
         # Extract x and z components from actions

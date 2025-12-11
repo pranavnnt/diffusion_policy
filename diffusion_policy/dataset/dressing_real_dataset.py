@@ -351,11 +351,10 @@ class DressingRealDataset(BaseLowdimDataset):
             obs_scaled = scale_sim_obs(obs_trimmed)
             act_scaled = scale_sim_action(act_trimmed)
         else:
-            # Real world data: already in correct format
-            pass
+            obs_scaled = np.concatenate([obs[:, :-2], obs[:, -1:]], axis=1)
             
-        assert obs_scaled.shape[1] == 16, (
-            f"Expected obs dim 16, got {obs_scaled.shape[1]}"
+        assert obs_scaled.shape[1] == 15, (
+            f"Expected obs dim 15, got {obs_scaled.shape[1]}"
         )
 
         data = {
