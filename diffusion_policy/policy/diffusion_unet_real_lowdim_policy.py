@@ -1,3 +1,7 @@
+"""
+Policy for dressing task with dual observations.
+Handles separate encoders for state and distilled_features.
+"""
 from typing import Dict
 import torch
 import torch.nn as nn
@@ -10,39 +14,95 @@ from diffusion_policy.policy.base_lowdim_policy import BaseLowdimPolicy
 from diffusion_policy.model.diffusion.conditional_unet1d import ConditionalUnet1D
 from diffusion_policy.model.diffusion.mask_generator import LowdimMaskGenerator
 
+
+def create_mlp(input_dim: int, output_dim: int, hidden_dims: list, activation: str = 'relu') -> nn.Module:
+    """Create a simple MLP."""
+    layers = []
+    dims = [input_dim] + hidden_dims + [output_dim]
+    
+    for i in range(len(dims) - 1):
+        layers.append(nn.Linear(dims[i], dims[i+1]))
+        if i < len(dims) - 2:  # No activation after last layer
+            if activation == 'relu':
+                layers.append(nn.ReLU())
+            elif activation == 'elu':
+                layers.append(nn.ELU())
+    
+    return nn.Sequential(*layers)
+
+
 class DiffusionUnetRealLowdimPolicy(BaseLowdimPolicy):
-    def __init__(self, 
-            model: ConditionalUnet1D,
-            noise_scheduler: DDPMScheduler,
-            horizon, 
-            obs_dim, 
-            action_dim, 
-            n_action_steps, 
-            n_obs_steps,
-            num_inference_steps=None,
-            obs_as_local_cond=False,
-            obs_as_global_cond=False,
-            pred_action_steps_only=False,
-            oa_step_convention=False,
-            domain_encoding_dim=0,
-            # parameters passed to step
-            **kwargs):
+    """
+    Handles dual observations:
+    - state: low-dim robot state
+    - distilled_features: high-dim visual features
+    
+    Each observation type gets its own encoder, then concatenated
+    before passing to the diffusion model.
+    """
+    
+    def __init__(
+        self,
+        model: ConditionalUnet1D,
+        noise_scheduler: DDPMScheduler,
+        horizon: int,
+        obs_dim: int,  # Not used directly, kept for compatibility
+        action_dim: int,
+        n_action_steps: int,
+        n_obs_steps: int,
+        state_dim: int,
+        distilled_features_dim: int,
+        state_encoder_hidden_dims: list = [128],
+        distilled_encoder_hidden_dims: list = [128],
+        encoder_output_dim: int = 64,
+        num_inference_steps=None,
+        obs_as_local_cond=False,
+        obs_as_global_cond=False,
+        pred_action_steps_only=False,
+        oa_step_convention=False,
+        **kwargs
+    ):
         super().__init__()
+        
         assert not (obs_as_local_cond and obs_as_global_cond)
         if pred_action_steps_only:
             assert obs_as_global_cond
+        
+        # Store dimensions
+        self.state_dim = state_dim
+        self.distilled_features_dim = distilled_features_dim
+        self.encoder_output_dim = encoder_output_dim
+        self.combined_obs_dim = 2 * encoder_output_dim  # Combined encoded dimension
+        
+        # Create encoders
+        self.state_encoder = create_mlp(
+            input_dim=state_dim,
+            output_dim=encoder_output_dim,
+            hidden_dims=state_encoder_hidden_dims,
+            activation='relu'
+        )
+        
+        self.distilled_encoder = create_mlp(
+            input_dim=distilled_features_dim,
+            output_dim=encoder_output_dim,
+            hidden_dims=distilled_encoder_hidden_dims,
+            activation='relu'
+        )
+        
+        # Store model and scheduler
         self.model = model
         self.noise_scheduler = noise_scheduler
         self.mask_generator = LowdimMaskGenerator(
             action_dim=action_dim,
-            obs_dim=0 if (obs_as_local_cond or obs_as_global_cond) else obs_dim,
+            obs_dim=0 if (obs_as_local_cond or obs_as_global_cond) else self.combined_obs_dim,
             max_n_obs_steps=n_obs_steps,
             fix_obs_steps=True,
             action_visible=False
         )
+        
         self.normalizer = LinearNormalizer()
         self.horizon = horizon
-        self.obs_dim = obs_dim
+        self.obs_dim = self.combined_obs_dim  # Use combined dim
         self.action_dim = action_dim
         self.n_action_steps = n_action_steps
         self.n_obs_steps = n_obs_steps
@@ -50,28 +110,30 @@ class DiffusionUnetRealLowdimPolicy(BaseLowdimPolicy):
         self.obs_as_global_cond = obs_as_global_cond
         self.pred_action_steps_only = pred_action_steps_only
         self.oa_step_convention = oa_step_convention
-        self.domain_encoding_dim = domain_encoding_dim
         self.kwargs = kwargs
-
-        if self.domain_encoding_dim > 0:
-            self.use_domain_encoding = True
-        else:
-            self.use_domain_encoding = False
-
-        print("In policy file, use_domain_encoding:", self.use_domain_encoding)
 
         if num_inference_steps is None:
             num_inference_steps = noise_scheduler.config.num_train_timesteps
         self.num_inference_steps = num_inference_steps
     
+    def encode_observations(self, state: torch.Tensor, distilled_features: torch.Tensor) -> torch.Tensor:
+        """
+        Encode state and distilled_features separately, then concatenate.
+        
+        Args:
+            state: [B, T, state_dim] or [B, state_dim]
+            distilled_features: [B, T, distilled_dim] or [B, distilled_dim]
+            
+        Returns:
+            combined: [B, T, combined_obs_dim] or [B, combined_obs_dim]
+        """
+        state_enc = self.state_encoder(state)
+        distilled_enc = self.distilled_encoder(distilled_features)
+        combined = torch.cat([state_enc, distilled_enc], dim=-1)
+        return combined
+    
     # ========= inference  ============
-    def conditional_sample(self, 
-            condition_data, condition_mask,
-            local_cond=None, global_cond=None,
-            generator=None,
-            # keyword arguments to scheduler.step
-            **kwargs
-            ):
+    def conditional_sample(self, condition_data, condition_mask, local_cond=None, global_cond=None, generator=None, **kwargs):
         model = self.model
         scheduler = self.noise_scheduler
 
@@ -81,83 +143,77 @@ class DiffusionUnetRealLowdimPolicy(BaseLowdimPolicy):
             device=condition_data.device,
             generator=generator)
     
-        # set step values
         scheduler.set_timesteps(self.num_inference_steps)
 
         for t in scheduler.timesteps:
-            # 1. apply conditioning
             trajectory[condition_mask] = condition_data[condition_mask]
-
-            # 2. predict model output
             model_output = model(trajectory, t, 
                 local_cond=local_cond, global_cond=global_cond)
-
-            # 3. compute previous image: x_t -> x_t-1
             trajectory = scheduler.step(
                 model_output, t, trajectory, 
                 generator=generator,
                 **kwargs
-                ).prev_sample
+            ).prev_sample
         
-        # finally make sure conditioning is enforced
         trajectory[condition_mask] = condition_data[condition_mask]        
-
         return trajectory
-
 
     def predict_action(self, obs_dict: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
         """
-        obs_dict: must include "obs" key
-        result: must include "action" key
+        Predict actions from dual observations.
+        
+        Args:
+            obs_dict: Dictionary containing:
+                - 'state': state observations [B, T, state_dim]
+                - 'distilled_features': visual features [B, T, distilled_dim]
+        
+        Returns:
+            action_dict: Dictionary with predicted actions
         """
-
-        assert 'obs' in obs_dict
-        assert 'past_action' not in obs_dict # not implemented yet
-        nobs = self.normalizer['obs'].normalize(obs_dict['obs'])
+        assert 'state' in obs_dict
+        assert 'distilled_features' in obs_dict
+        
+        # Normalize state and distilled features separately
+        nstate = self.normalizer['state'].normalize(obs_dict['state'])
+        ndistilled = self.normalizer['distilled_features'].normalize(obs_dict['distilled_features'])
+        
+        # Encode observations
+        nobs = self.encode_observations(nstate, ndistilled)
+        
         B, _, Do = nobs.shape
         To = self.n_obs_steps
-        assert Do == self.obs_dim
+        assert Do == self.combined_obs_dim
         T = self.horizon
         Da = self.action_dim
 
-        # build input
         device = self.device
         dtype = self.dtype
 
-        # handle different ways of passing observation
+        # Handle different ways of passing observation
         local_cond = None
         global_cond = None
+        
         if self.obs_as_local_cond:
-            # condition through local feature
-            # all zero except first To timesteps
             local_cond = torch.zeros(size=(B,T,Do), device=device, dtype=dtype)
             local_cond[:,:To] = nobs[:,:To]
             shape = (B, T, Da)
             cond_data = torch.zeros(size=shape, device=device, dtype=dtype)
             cond_mask = torch.zeros_like(cond_data, dtype=torch.bool)
         elif self.obs_as_global_cond:
-            # condition throught global feature
             global_cond = nobs[:,:To].reshape(nobs.shape[0], -1)
-            # incorporate one-hot encoding
-            if self.use_domain_encoding:
-                assert 'domain_encoding' in obs_dict, f"obs_dict only contains keys {obs_dict.keys()}"
-                domain_encoding = obs_dict['domain_encoding'].to(self.device)
-                global_cond = torch.cat([global_cond, domain_encoding], dim=-1)
-
             shape = (B, T, Da)
             if self.pred_action_steps_only:
                 shape = (B, self.n_action_steps, Da)
             cond_data = torch.zeros(size=shape, device=device, dtype=dtype)
             cond_mask = torch.zeros_like(cond_data, dtype=torch.bool)
         else:
-            # condition through impainting
             shape = (B, T, Da+Do)
             cond_data = torch.zeros(size=shape, device=device, dtype=dtype)
             cond_mask = torch.zeros_like(cond_data, dtype=torch.bool)
             cond_data[:,:To,Da:] = nobs[:,:To]
             cond_mask[:,:To,Da:] = True
 
-        # run sampling
+        # Run sampling
         nsample = self.conditional_sample(
             cond_data, 
             cond_mask,
@@ -165,11 +221,11 @@ class DiffusionUnetRealLowdimPolicy(BaseLowdimPolicy):
             global_cond=global_cond,
             **self.kwargs)
         
-        # unnormalize prediction
+        # Unnormalize prediction
         naction_pred = nsample[...,:Da]
         action_pred = self.normalizer['action'].unnormalize(naction_pred)
 
-        # get action
+        # Get action
         if self.pred_action_steps_only:
             action = action_pred
         else:
@@ -183,12 +239,14 @@ class DiffusionUnetRealLowdimPolicy(BaseLowdimPolicy):
             'action': action,
             'action_pred': action_pred
         }
+        
         if not (self.obs_as_local_cond or self.obs_as_global_cond):
             nobs_pred = nsample[...,Da:]
             obs_pred = self.normalizer['obs'].unnormalize(nobs_pred)
             action_obs_pred = obs_pred[:,start:end]
             result['action_obs_pred'] = action_obs_pred
             result['obs_pred'] = obs_pred
+            
         return result
 
     # ========= training  ============
@@ -196,31 +254,44 @@ class DiffusionUnetRealLowdimPolicy(BaseLowdimPolicy):
         self.normalizer.load_state_dict(normalizer.state_dict())
 
     def compute_loss(self, batch):
-        # normalize input
-        assert 'valid_mask' not in batch
-        # do NOT normalize domain_encoding
-        nbatch = self.normalizer.normalize({k:v for k,v in batch.items() if k!='domain_encoding'})
-        if self.use_domain_encoding:
-            nbatch['domain_encoding'] = batch['domain_encoding']
-        obs = nbatch['obs']
+        """
+        Compute diffusion loss with dual observations.
+        
+        Args:
+            batch: Dictionary containing:
+                - 'state': state observations [B, T, state_dim]
+                - 'distilled_features': visual features [B, T, distilled_dim]
+                - 'action': actions [B, T, action_dim]
+        
+        Returns:
+            loss: Scalar loss value
+        """
+        # Normalize state and distilled features separately
+        keys_to_normalize = ['state', 'distilled_features', 'action']
+        nbatch = {}
+        for k in keys_to_normalize:
+            if k in batch:
+                try:
+                    nbatch[k] = self.normalizer[k].normalize(batch[k])
+                except KeyError:
+                    # Key not in normalizer, use raw value
+                    nbatch[k] = batch[k]
+        
+        # Encode observations
+        nobs = self.encode_observations(nbatch['state'], nbatch['distilled_features'])
         action = nbatch['action']
 
-        # handle different ways of passing observation
+        # Handle different ways of passing observation
         local_cond = None
         global_cond = None
         trajectory = action
+        
         if self.obs_as_local_cond:
-            # zero out observations after n_obs_steps
-            local_cond = obs
+            local_cond = nobs
             local_cond[:,self.n_obs_steps:,:] = 0
         elif self.obs_as_global_cond:
-            global_cond = obs[:,:self.n_obs_steps,:].reshape(obs.shape[0], -1)
-            # incorporate one-hot encoding
-            if self.use_domain_encoding:
-                assert 'domain_encoding' in batch, f"batch only contains keys {batch.keys()}"
-                domain_encoding = batch['domain_encoding'].to(self.device)
-                global_cond = torch.cat([global_cond, domain_encoding], dim=-1)
-
+            global_cond = nobs[:,:self.n_obs_steps,:].reshape(nobs.shape[0], -1)
+            
             if self.pred_action_steps_only:
                 To = self.n_obs_steps
                 start = To
@@ -229,31 +300,32 @@ class DiffusionUnetRealLowdimPolicy(BaseLowdimPolicy):
                 end = start + self.n_action_steps
                 trajectory = action[:,start:end]
         else:
-            trajectory = torch.cat([action, obs], dim=-1)
+            trajectory = torch.cat([action, nobs], dim=-1)
 
-        # generate impainting mask
+        # Generate impainting mask
         if self.pred_action_steps_only:
             condition_mask = torch.zeros_like(trajectory, dtype=torch.bool)
         else:
             condition_mask = self.mask_generator(trajectory.shape)
 
-        # Sample noise that we'll add to the images
+        # Sample noise
         noise = torch.randn(trajectory.shape, device=trajectory.device)
         bsz = trajectory.shape[0]
-        # Sample a random timestep for each image
+        
+        # Sample random timestep
         timesteps = torch.randint(
             0, self.noise_scheduler.config.num_train_timesteps, 
             (bsz,), device=trajectory.device
         ).long()
-        # Add noise to the clean images according to the noise magnitude at each timestep
-        # (this is the forward diffusion process)
+        
+        # Add noise (forward diffusion)
         noisy_trajectory = self.noise_scheduler.add_noise(
             trajectory, noise, timesteps)
         
-        # compute loss mask
+        # Compute loss mask
         loss_mask = ~condition_mask
 
-        # apply conditioning
+        # Apply conditioning
         noisy_trajectory[condition_mask] = trajectory[condition_mask]
         
         # Predict the noise residual
@@ -272,4 +344,5 @@ class DiffusionUnetRealLowdimPolicy(BaseLowdimPolicy):
         loss = loss * loss_mask.type(loss.dtype)
         loss = reduce(loss, 'b ... -> b (...)', 'mean')
         loss = loss.mean()
+        
         return loss

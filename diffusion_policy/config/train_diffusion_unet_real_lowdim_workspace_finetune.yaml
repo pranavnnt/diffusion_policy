@@ -7,6 +7,8 @@ _target_: diffusion_policy.workspace.train_diffusion_unet_real_lowdim_workspace.
 
 obs_dim: ${task.obs_dim}
 action_dim: ${task.action_dim}
+state_dim: ${task.state_dim}
+distilled_features_dim: ${task.distilled_features_dim}
 keypoint_dim: ${task.keypoint_dim}
 task_name: ${task.name}
 exp_name: "default"
@@ -23,12 +25,19 @@ pred_action_steps_only: False
 
 policy:
   _target_: diffusion_policy.policy.diffusion_unet_real_lowdim_policy.DiffusionUnetRealLowdimPolicy
+  obs_dim: ${eval:'2*${policy.encoder_output_dim}'}  # Combined encoded dim = 128
+  state_dim: ${state_dim}  # 18
+  distilled_features_dim: ${distilled_features_dim}  # 66
+  state_encoder_hidden_dims: [128]  # Single hidden layer, smaller
+  distilled_encoder_hidden_dims: [128]  # Single hidden layer, smaller
+  encoder_output_dim: 64  # Reduced from 128 -> combined = 128
+  action_dim: ${action_dim}
 
   model:
     _target_: diffusion_policy.model.diffusion.conditional_unet1d.ConditionalUnet1D
-    input_dim: "${eval: ${task.action_dim} if ${obs_as_local_cond} or ${obs_as_global_cond} else ${task.obs_dim} + ${task.action_dim}}"
-    local_cond_dim: "${eval: ${task.obs_dim} if ${obs_as_local_cond} else None}"
-    global_cond_dim: "${eval: ${task.obs_dim}*${n_obs_steps}+${policy.domain_encoding_dim} if ${obs_as_global_cond} else None}"
+    input_dim: ${action_dim}  # 2
+    local_cond_dim: null
+    global_cond_dim: "${eval: 2*${policy.encoder_output_dim}*${n_obs_steps}}"  # 2*64*8=1024
     diffusion_step_embed_dim: 256
     down_dims: [64, 128, 256]
     kernel_size: 5
@@ -46,11 +55,8 @@ policy:
     prediction_type: epsilon # or sample
 
   horizon: ${horizon}
-  obs_dim: ${obs_dim}
-  action_dim: ${action_dim}
   n_action_steps: ${eval:'${n_action_steps}+${n_latency_steps}'}
   n_obs_steps: ${n_obs_steps}
-  domain_encoding_dim: "${eval: ${task.dataset.domain_encoding_dim} if ${task.dataset.use_domain_encoding} else 0}"
   num_inference_steps: 100
   obs_as_local_cond: ${obs_as_local_cond}
   obs_as_global_cond: ${obs_as_global_cond}
@@ -84,7 +90,7 @@ val_dataloader:
 
 optimizer:
   _target_: torch.optim.AdamW
-  lr: 3.0e-6
+  lr: 1.0e-4
   betas: [0.95, 0.999]
   eps: 1.0e-8
   weight_decay: 1.0e-6
@@ -112,7 +118,7 @@ training:
   tqdm_interval_sec: 1.0
 
   # config/finetune_real.yaml
-  pretrained_checkpoint: /home/pnt8/workspace/dressing_sim_ws/diffusion_policy/data/outputs/2025.12.05_18.43.05_sim_no_domain_encoding_dressing_sim/checkpoints/latest.ckpt
+  # pretrained_checkpoint: /home/pnt8/workspace/dressing_sim_ws/diffusion_policy/data/outputs/2025.12.05_18.43.05_sim_no_domain_encoding_dressing_sim/checkpoints/latest.ckpt
   resume: False  # False for initial finetuning
 
 logging:
@@ -134,7 +140,7 @@ checkpoint:
   save_last_snapshot: False
 
 multi_run:
-  run_dir: data/outputs/real_finetune/${now:%Y.%m.%d}/${now:%H.%M.%S}_${name}_${task_name}
+  run_dir: data/outputs/real/${now:%Y.%m.%d}/${now:%H.%M.%S}_${name}_${task_name}
   wandb_name_base: ${now:%Y.%m.%d-%H.%M.%S}_${name}_${task_name}
 
 hydra:

@@ -8,7 +8,7 @@ from diffusion_policy.common.sampler import SequenceSampler, get_val_mask
 from diffusion_policy.model.common.normalizer import LinearNormalizer
 from diffusion_policy.dataset.base_dataset import BaseLowdimDataset
 
-from diffusion_policy.dressing.sim2real_transforms import (
+from diffusion_policy.dressing.real_transforms import (
     filter_sim_obs,
     scale_sim_obs,
     scale_sim_action,

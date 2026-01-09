@@ -33,7 +33,6 @@ from diffusers.training_utils import EMAModel
 
 OmegaConf.register_new_resolver("eval", eval, replace=True)
 
-# %%
 class TrainDiffusionUnetRealLowdimWorkspace(BaseWorkspace):
     include_keys = ['global_step', 'epoch']
 
@@ -47,10 +46,10 @@ class TrainDiffusionUnetRealLowdimWorkspace(BaseWorkspace):
         random.seed(seed)
 
         # configure model
-        self.model: DiffusionUnetLowdimPolicy
+        self.model: DiffusionUnetRealLowdimPolicy
         self.model = hydra.utils.instantiate(cfg.policy)
 
-        self.ema_model: DiffusionUnetLowdimPolicy = None
+        self.ema_model: DiffusionUnetRealLowdimPolicy = None
         if cfg.training.use_ema:
             self.ema_model = copy.deepcopy(self.model)
 
@@ -60,30 +59,6 @@ class TrainDiffusionUnetRealLowdimWorkspace(BaseWorkspace):
 
         self.global_step = 0
         self.epoch = 0
-
-    def _print_dataset_diagnostics(self, cfg, dataset, train_dataloader, val_dataloaders):
-        print()
-        print("============= Dataset Diagnostics =============")
-        print(f"Number of datasets: {self.num_datasets}")
-        print(f"Sample probabilities: {self.sample_probabilities}")
-        print(f"[Training] Batches: {len(train_dataloader)}")
-        for i in range(self.num_datasets):
-            print(f"[Val {i}] Batches: {len(val_dataloaders[i])}")
-        print()
-
-        for i in range(self.num_datasets):
-            val_dataset = dataset.get_validation_dataset(i)
-            print(f"Dataset {i}: {dataset.zarr_paths[i]}")
-            print("------------------------------------------------")
-            print(f"Train demos: {np.sum(dataset.train_masks[i])}")
-            print(f"Val demos: {np.sum(dataset.val_masks[i])}")
-            if dataset.samplers[i] is not None:
-                print(f"Train samples: {len(dataset.samplers[i])}")
-            else:
-                print(f"Train samples: 0 (used for normalization only)")
-            print(f"Val samples: {len(val_dataset)}")
-            print()
-        print("================================================")
 
     def run(self):
         cfg = copy.deepcopy(self.cfg)
@@ -100,22 +75,25 @@ class TrainDiffusionUnetRealLowdimWorkspace(BaseWorkspace):
         dataset = hydra.utils.instantiate(cfg.task.dataset)
         assert isinstance(dataset, BaseLowdimDataset)
 
-        self.num_datasets = dataset.get_num_datasets()
-        print("In workspace, number of datasets:", self.num_datasets)
-        self.sample_probabilities = dataset.get_sample_probabilities()
-
         train_dataloader = DataLoader(dataset, **cfg.dataloader)
         
-        # Get normalizer from dataset (computes from sim data even if sim has 0 training samples)
+        # Get normalizer from dataset
         normalizer = dataset.get_normalizer()
 
         # configure validation dataset
-        val_dataloaders = []
-        for i in range(self.num_datasets):
-            val_dataset = dataset.get_validation_dataset(i)
-            val_dataloaders.append(DataLoader(val_dataset, **cfg.val_dataloader))
-        val_sampling_batches = [None] * self.num_datasets
-        self._print_dataset_diagnostics(cfg, dataset, train_dataloader, val_dataloaders)
+        val_dataset = dataset.get_validation_dataset()
+        val_dataloader = DataLoader(val_dataset, **cfg.val_dataloader)
+        
+        print()
+        print("============= Dataset Diagnostics =============")
+        print(f"Train episodes: {np.sum(dataset.train_mask)}")
+        print(f"Val episodes: {np.sum(val_dataset.train_mask)}")
+        print(f"Train samples: {len(dataset)}")
+        print(f"Val samples: {len(val_dataset)}")
+        print(f"Train batches: {len(train_dataloader)}")
+        print(f"Val batches: {len(val_dataloader)}")
+        print("================================================")
+        print()
 
         # Load pretrained checkpoint if specified (weights only, not optimizer/epoch)
         if cfg.training.get('pretrained_checkpoint', None) is not None:
@@ -145,13 +123,7 @@ class TrainDiffusionUnetRealLowdimWorkspace(BaseWorkspace):
             else:
                 raise FileNotFoundError(f"Pretrained checkpoint not found at {pretrained_path}")
 
-        # Handle case where normalizer is still None
-        if normalizer is None:
-            raise ValueError(
-                "No normalizer available. Either include sim data in dataset or "
-                "provide a pretrained checkpoint with normalizer."
-            )
-
+        # Set normalizer
         self.model.set_normalizer(normalizer)
         if cfg.training.use_ema:
             self.ema_model.set_normalizer(normalizer)
@@ -211,6 +183,7 @@ class TrainDiffusionUnetRealLowdimWorkspace(BaseWorkspace):
 
         # save batch for sampling
         train_sampling_batch = None
+        val_sampling_batch = None
 
         if cfg.training.debug:
             cfg.training.num_epochs = 2
@@ -264,7 +237,6 @@ class TrainDiffusionUnetRealLowdimWorkspace(BaseWorkspace):
 
                         is_last_batch = (batch_idx == (len(train_dataloader)-1))
                         if not is_last_batch:
-                            # log of last step is combined with validation and rollout
                             wandb_run.log(step_log, step=self.global_step)
                             json_logger.log(step_log)
                             self.global_step += 1
@@ -274,7 +246,6 @@ class TrainDiffusionUnetRealLowdimWorkspace(BaseWorkspace):
                             break
                 
                 # at the end of each epoch
-                # replace train_loss with epoch average
                 train_loss = np.mean(train_losses)
                 step_log['train_loss'] = train_loss
 
@@ -287,58 +258,39 @@ class TrainDiffusionUnetRealLowdimWorkspace(BaseWorkspace):
                 # run rollout
                 if env_runner is not None and (self.epoch % cfg.training.rollout_every) == 0:
                     runner_log = env_runner.run(policy)
-                    # log all
                     step_log.update(runner_log)
 
                 # run validation
                 if (self.epoch % cfg.training.val_every) == 0:
                     with torch.no_grad():
-                        val_loss_per_dataset = []
+                        val_losses = []
+                        with tqdm.tqdm(val_dataloader,
+                                       desc=f"Validation epoch {self.epoch}",
+                                       leave=False,
+                                       mininterval=cfg.training.tqdm_interval_sec) as tepoch:
 
-                        for dataset_idx in range(self.num_datasets):
-                            val_losses = []
-                            val_dataloader = val_dataloaders[dataset_idx]
+                            for batch_idx, batch in enumerate(tepoch):
+                                batch = dict_apply(batch, lambda x: x.to(device, non_blocking=True))
+                                if val_sampling_batch is None:
+                                    val_sampling_batch = dict_apply(batch, lambda x: x.cpu())
+                                loss = self.model.compute_loss(batch)
+                                val_losses.append(loss)
+                                if (cfg.training.max_val_steps is not None) and \
+                                    batch_idx >= (cfg.training.max_val_steps-1):
+                                    break
 
-                            with tqdm.tqdm(val_dataloader,
-                                           desc=f"Val dataset {dataset_idx}, epoch {self.epoch}",
-                                           leave=False,
-                                           mininterval=cfg.training.tqdm_interval_sec) as tepoch:
+                        if len(val_losses) > 0:
+                            val_loss = torch.mean(torch.tensor(val_losses)).item()
+                            step_log['val_loss'] = val_loss
 
-                                for batch_idx, batch in enumerate(tepoch):
-                                    batch = dict_apply(batch, lambda x: x.to(device, non_blocking=True))
-                                    if val_sampling_batches[dataset_idx] is None:
-                                        val_sampling_batches[dataset_idx] = dict_apply(batch, lambda x: x.cpu())           # store first batch for later sampling
-                                    loss = self.model.compute_loss(batch)
-                                    val_losses.append(loss)
-                                    if (cfg.training.max_val_steps is not None) and \
-                                        batch_idx >= (cfg.training.max_val_steps-1):
-                                        break
-
-                            if len(val_losses) > 0:
-                                val_loss = torch.mean(torch.tensor(val_losses)).item()
-                                step_log[f'val_loss_{dataset_idx}'] = val_loss
-                                val_loss_per_dataset.append(val_loss)
-
-                        # Weighted sum across datasets
-                        overall_val = 0
-                        active_weight_sum = 0
-                        for i in range(self.num_datasets):
-                            if self.sample_probabilities[i] > 0 and i < len(val_loss_per_dataset):
-                                overall_val += self.sample_probabilities[i] * val_loss_per_dataset[i]
-                                active_weight_sum += self.sample_probabilities[i]
-                        
-                        if active_weight_sum > 0:
-                            step_log['val_loss'] = overall_val / active_weight_sum
-                        elif len(val_loss_per_dataset) > 0:
-                            step_log['val_loss'] = np.mean(val_loss_per_dataset)
-
-                # run diffusion sampling on a training batch
+                # run diffusion sampling on training batch
                 if (self.epoch % cfg.training.sample_every) == 0:
                     with torch.no_grad():
-                        # sample trajectory from training set, and evaluate difference
                         batch = train_sampling_batch
-                        obs_dict = {'obs': batch['obs'],
-                                    'domain_encoding': batch.get('domain_encoding', None)}
+                        obs_dict = {
+                            'state': batch['state'],
+                            'distilled_features': batch['distilled_features']
+                        }
                         gt_action = batch['action']
                         
                         result = policy.predict_action(obs_dict)
@@ -350,29 +302,18 @@ class TrainDiffusionUnetRealLowdimWorkspace(BaseWorkspace):
                         else:
                             pred_action = result['action_pred']
                         mse = torch.nn.functional.mse_loss(pred_action, gt_action)
-                        # log
                         step_log['train_action_mse_error'] = mse.item()
-                        # release RAM
-                        del batch
-                        del obs_dict
-                        del gt_action
-                        del result
-                        del pred_action
-                        del mse
+                        del batch, obs_dict, gt_action, result, pred_action, mse
 
-                # run multi-dataset validation action MSE
+                # run validation action MSE
                 if (self.epoch % cfg.training.sample_every) == 0:
                     with torch.no_grad():
-                        mse_per_dataset = []
-
-                        for dataset_idx in range(self.num_datasets):
-                            val_batch = val_sampling_batches[dataset_idx]
-                            if val_batch is None:
-                                continue  # dataset may be empty
-
-                            batch = dict_apply(val_batch, lambda x: x.to(device, non_blocking=True))
-
-                            obs_dict = {k: batch[k] for k in batch.keys() if k != 'action'}
+                        if val_sampling_batch is not None:
+                            batch = dict_apply(val_sampling_batch, lambda x: x.to(device, non_blocking=True))
+                            obs_dict = {
+                                'state': batch['state'],
+                                'distilled_features': batch['distilled_features']
+                            }
                             gt_action = batch['action']
 
                             result = policy.predict_action(obs_dict)
@@ -386,22 +327,7 @@ class TrainDiffusionUnetRealLowdimWorkspace(BaseWorkspace):
                                 pred_action = result['action_pred']
 
                             mse = torch.nn.functional.mse_loss(pred_action, gt_action)
-                            step_log[f'val_action_mse_{dataset_idx}'] = mse.item()
-                            mse_per_dataset.append(mse.item())
-
-                        # weighted sum across datasets (only active ones)
-                        overall_mse = 0
-                        active_weight_sum = 0
-                        for i in range(min(self.num_datasets, len(mse_per_dataset))):
-                            if self.sample_probabilities[i] > 0:
-                                overall_mse += self.sample_probabilities[i] * mse_per_dataset[i]
-                                active_weight_sum += self.sample_probabilities[i]
-                        
-                        if active_weight_sum > 0:
-                            step_log['val_action_mse'] = overall_mse / active_weight_sum
-                        elif len(mse_per_dataset) > 0:
-                            step_log['val_action_mse'] = np.mean(mse_per_dataset)
-
+                            step_log['val_action_mse'] = mse.item()
                 
                 # checkpoint
                 if (self.epoch % cfg.training.checkpoint_every) == 0:
