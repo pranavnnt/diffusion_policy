@@ -1,7 +1,7 @@
 name: dressing_real_first_arm
-state_dim: 9  # From zarr: state (9458, 18)
-distilled_features_dim: 66  # From zarr: distilled_features (9458, 66)
-action_dim: 3  # After selecting indices [0, 2] from original 3-dim
+state_dim: 9  
+distilled_features_dim: 66  
+action_dim: 3  
 obs_dim: ${state_dim}  # Keep for backward compatibility
 keypoint_dim: 0
 obs_eef_target: False

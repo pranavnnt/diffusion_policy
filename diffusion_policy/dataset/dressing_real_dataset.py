@@ -11,6 +11,7 @@ from diffusion_policy.common.sampler import (
     SequenceSampler, get_val_mask, downsample_mask)
 from diffusion_policy.model.common.normalizer import LinearNormalizer
 from diffusion_policy.dataset.base_dataset import BaseLowdimDataset
+from diffusion_policy.dressing.real_transforms import filter_state, add_noise
 
 
 class DressingRealDataset(BaseLowdimDataset):
@@ -29,6 +30,7 @@ class DressingRealDataset(BaseLowdimDataset):
         obs_key: str = 'state',
         action_key: str = 'action',
         distilled_features_key: str = 'distilled_features',
+        dataset_name: str = 'real',  # Default to real
         seed: int = 42,
         val_ratio: float = 0.0,
         max_train_episodes: Optional[int] = None
@@ -42,6 +44,22 @@ class DressingRealDataset(BaseLowdimDataset):
         # Load replay buffer
         self.replay_buffer = ReplayBuffer.copy_from_path(
             zarr_path, keys=keys)
+        
+        # Load feature keys from zarr metadata
+        import zarr as zarr_lib
+        z = zarr_lib.open(zarr_path, mode="r")
+        self.distilled_keys = z["keys/distilled_features_keys"][:].tolist()
+        self.state_keys = z["keys/state_keys"][:].tolist()
+        
+        # Filter state keys to only include "back"
+        self.filtered_state_keys = [key for key in self.state_keys if "back" in key.lower()]
+        print(f"Original state keys: {self.state_keys}")
+        print(f"Filtered state keys (back only): {self.filtered_state_keys}")
+        
+        # Verify filtered state dimension
+        expected_filtered_dim = len(self.filtered_state_keys) * 3  # Each key has 3 dims
+        assert expected_filtered_dim == 9, f"Filtered state should have 9 dims, got {expected_filtered_dim}"
+        print(f"✓ Filtered state dimension: {expected_filtered_dim}")
         
         # Create train/val split
         val_mask = get_val_mask(
@@ -67,10 +85,12 @@ class DressingRealDataset(BaseLowdimDataset):
         self.obs_key = obs_key
         self.action_key = action_key
         self.distilled_features_key = distilled_features_key
+        self.dataset_name = dataset_name
         self.train_mask = train_mask
         self.horizon = horizon
         self.pad_before = pad_before
         self.pad_after = pad_after
+        self.zarr_path = zarr_path  # Store for validation dataset creation
 
     def get_validation_dataset(self):
         """Create validation dataset using val_mask."""
@@ -83,6 +103,12 @@ class DressingRealDataset(BaseLowdimDataset):
             episode_mask=~self.train_mask
         )
         val_set.train_mask = ~self.train_mask
+        # Copy keys and metadata
+        val_set.distilled_keys = self.distilled_keys
+        val_set.state_keys = self.state_keys
+        val_set.filtered_state_keys = self.filtered_state_keys
+        val_set.dataset_name = self.dataset_name
+        val_set.zarr_path = self.zarr_path
         return val_set
 
     def get_normalizer(self, mode: str = 'limits', **kwargs) -> LinearNormalizer:
@@ -115,23 +141,26 @@ class DressingRealDataset(BaseLowdimDataset):
             sample: Raw sample from replay buffer
             
         Returns:
-            Dictionary with 'obs', 'action', and optionally 'distilled_features'
+            Dictionary with 'obs', 'action', 'state', 'distilled_features'
         """
         
-        state = sample[self.obs_key]
+        state_raw = sample[self.obs_key]
         action = sample[self.action_key]  
         distilled_features = sample[self.distilled_features_key]
+        
+        # Filter state to only include "back" keys
+        state = filter_state(state_raw, self.filtered_state_keys)
+        
+        # Assert filtered state has correct dimension
+        assert state.shape[-1] == 9, f"Filtered state should have 9 dims, got {state.shape[-1]}"
 
         # Build output dictionary
         data = {
             'obs': distilled_features,
             'action': action,
-            'state': state
+            'state': state,
+            'distilled_features': distilled_features
         }
-        
-        # Add distilled features if enabled
-        distilled_features = sample[self.distilled_features_key]
-        data['distilled_features'] = distilled_features
         
         return data
 
@@ -142,11 +171,19 @@ class DressingRealDataset(BaseLowdimDataset):
             idx: Sample index
             
         Returns:
-            Dictionary with torch tensors for 'obs', 'action',
-            and optionally 'distilled_features'
+            Dictionary with torch tensors for 'obs', 'action', 'state', 'distilled_features'
         """
         sample = self.sampler.sample_sequence(idx)
         data = self._sample_to_data(sample)
+        
+        # Add noise (only for sim data, using filtered state keys)
+        data = add_noise(
+            data,
+            dataset_name=self.dataset_name,
+            distilled_keys=self.distilled_keys,
+            state_keys=self.filtered_state_keys  # Use filtered keys for noise
+        )
+        
         torch_data = dict_apply(data, torch.from_numpy)
         return torch_data
 

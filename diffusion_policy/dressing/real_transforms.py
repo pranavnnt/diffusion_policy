@@ -1,6 +1,7 @@
 import numpy as np
 from typing import Dict, List
 
+
 from diffusion_policy.dressing.keys import get_distilled_feature_dims, get_state_dict
 
 # Noise standard deviations per feature type
@@ -129,20 +130,34 @@ def add_noise(
     # Add noise to distilled features
     if 'distilled_features' in data and distilled_keys is not None:
         distilled = data['distilled_features']
-        distilled_noise = generate_distilled_features_noise(distilled_keys, distilled.shape, dataset_name)
+        distilled_noise = generate_distilled_noise(distilled_keys, distilled.shape, dataset_name)
         data['distilled_features'] = distilled + distilled_noise
     
     return data
 
-def filter_state(state: np.ndarray, keys: list[str]) -> np.ndarray:
-    """
-    Given a full state array and a list of keys, return a filtered state array containing only the features corresponding to the keys.
-    """
-    dims = [3 for _ in keys]  # All state keys have dimension 3
-    filtered_state = []
-    index = 0
-    for dim in dims:
-        filtered_state.append(state[index:index+dim])
-        index += dim
-    return np.concatenate(filtered_state)
 
+def filter_state(state: np.ndarray, filtered_keys: List[str]) -> np.ndarray:
+    """
+    Filter full state array to only include features corresponding to filtered_keys.
+    
+    Args:
+        state: Full state array [..., 18] (6 keys × 3 dims each)
+        filtered_keys: List of state keys to keep (e.g., ['state_back_pos', 'state_back_vel', 'state_back_force'])
+        
+    Returns:
+        Filtered state array [..., len(filtered_keys)*3]
+    """
+    # All state keys from zarr (in order)
+    all_state_keys = ['state_front_pos', 'state_front_vel', 'state_front_force', 
+                      'state_back_pos', 'state_back_vel', 'state_back_force']
+    
+    # Find indices of filtered keys
+    filtered_indices = []
+    for key in filtered_keys:
+        if key in all_state_keys:
+            idx = all_state_keys.index(key)
+            # Each key has 3 dimensions, so add indices for all 3
+            filtered_indices.extend([idx*3, idx*3+1, idx*3+2])
+    
+    # Extract filtered dimensions
+    return state[..., filtered_indices]
