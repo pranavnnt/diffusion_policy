@@ -126,6 +126,13 @@ class DressingSimDataset(BaseLowdimDataset):
         obs_scaled = scale_sim_obs(obs_filtered)
         act_scaled = scale_sim_action(act_trimmed)
 
+        origin_xy = obs_scaled[0, 0:2].copy()
+        obs_scaled[:, 0:2] -= origin_xy
+
+        
+
+        print("Now, all ")
+
         data = {
             'obs': obs_scaled,
             'action': act_scaled,
