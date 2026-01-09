@@ -130,7 +130,7 @@ def add_noise(
     # Add noise to distilled features
     if 'distilled_features' in data and distilled_keys is not None:
         distilled = data['distilled_features']
-        distilled_noise = generate_distilled_noise(distilled_keys, distilled.shape, dataset_name)
+        distilled_noise = generate_distilled_features_noise(distilled_keys, distilled.shape, dataset_name)
         data['distilled_features'] = distilled + distilled_noise
     
     return data
