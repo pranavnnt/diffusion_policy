@@ -18,3 +18,5 @@ dataset:
   seed: 42
   val_ratio: 0.1
   max_train_episodes: null
+  upsampled: True
+  upsample_multiplier: 2

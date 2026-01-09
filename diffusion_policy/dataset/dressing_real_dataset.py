@@ -33,7 +33,9 @@ class DressingRealDataset(BaseLowdimDataset):
         dataset_name: str = 'real',  # Default to real
         seed: int = 42,
         val_ratio: float = 0.0,
-        max_train_episodes: Optional[int] = None
+        max_train_episodes: Optional[int] = None,
+        upsampled: bool = False,
+        upsample_multiplier: int = 1
     ):
         super().__init__()
         
@@ -72,10 +74,13 @@ class DressingRealDataset(BaseLowdimDataset):
             max_n=max_train_episodes,
             seed=seed)
         
+        # Calculate sequence length (account for upsampling)
+        seq_len = horizon * upsample_multiplier if upsampled else horizon
+        
         # Create sampler
         self.sampler = SequenceSampler(
             replay_buffer=self.replay_buffer,
-            sequence_length=horizon,
+            sequence_length=seq_len,
             pad_before=pad_before,
             pad_after=pad_after,
             episode_mask=train_mask
@@ -90,14 +95,20 @@ class DressingRealDataset(BaseLowdimDataset):
         self.horizon = horizon
         self.pad_before = pad_before
         self.pad_after = pad_after
-        self.zarr_path = zarr_path  # Store for validation dataset creation
+        self.zarr_path = zarr_path
+        self.upsampled = upsampled
+        self.upsample_multiplier = upsample_multiplier  # Store for validation dataset creation
 
     def get_validation_dataset(self):
         """Create validation dataset using val_mask."""
         val_set = copy.copy(self)
+        
+        # Calculate sequence length (account for upsampling)
+        seq_len = self.horizon * self.upsample_multiplier if self.upsampled else self.horizon
+        
         val_set.sampler = SequenceSampler(
             replay_buffer=self.replay_buffer,
-            sequence_length=self.horizon,
+            sequence_length=seq_len,
             pad_before=self.pad_before,
             pad_after=self.pad_after,
             episode_mask=~self.train_mask
@@ -109,6 +120,8 @@ class DressingRealDataset(BaseLowdimDataset):
         val_set.filtered_state_keys = self.filtered_state_keys
         val_set.dataset_name = self.dataset_name
         val_set.zarr_path = self.zarr_path
+        val_set.upsampled = self.upsampled
+        val_set.upsample_multiplier = self.upsample_multiplier
         return val_set
 
     def get_normalizer(self, mode: str = 'limits', **kwargs) -> LinearNormalizer:
@@ -165,7 +178,7 @@ class DressingRealDataset(BaseLowdimDataset):
         return data
 
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
-        """Get a single training sample.
+        """Get a single training sample with optional upsampling.
         
         Args:
             idx: Sample index
@@ -173,8 +186,17 @@ class DressingRealDataset(BaseLowdimDataset):
         Returns:
             Dictionary with torch tensors for 'obs', 'action', 'state', 'distilled_features'
         """
-        sample = self.sampler.sample_sequence(idx)
-        data = self._sample_to_data(sample)
+        # Sample sequence from replay buffer
+        raw_sample = self.sampler.sample_sequence(idx)
+        
+        # Subsample if using upsampled data
+        if self.upsampled:
+            # Subsample every `upsample_multiplier` frame to restore original timing
+            for k in [self.obs_key, self.action_key, self.distilled_features_key]:
+                raw_sample[k] = raw_sample[k][::self.upsample_multiplier]
+        
+        # Process sample (filter state, etc.)
+        data = self._sample_to_data(raw_sample)
         
         # Add noise (only for sim data, using filtered state keys)
         data = add_noise(
