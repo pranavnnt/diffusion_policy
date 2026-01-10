@@ -4,8 +4,10 @@ from typing import Dict
 # Constants for better maintainability
 SCALING_FACTORS = {
     'rel_pos_x': -180,
+    'rel_pos_y': 180,
     'rel_pos_z': 180,
     'vel_x': -180,
+    'vel_y': 180,
     'vel_z': 180,
     'cloth_rel_pos_x': -180,  # applied to 5 dimensions
     'cloth_rel_pos_z': 180,   # applied to 2 dimensions
@@ -15,8 +17,8 @@ SCALING_FACTORS = {
 }
 
 SIM_NOISE_STD = {
-    'rel_pos': np.array([1, 1], dtype=np.float32),
-    'vel': np.array([0.5, 0.5], dtype=np.float32),
+    'rel_pos': np.array([1, 1, 1], dtype=np.float32),
+    'vel': np.array([0.5, 0.5, 0.5], dtype=np.float32),
     'cloth_rel_pos_x': np.array([1, 1, 1, 1, 1], dtype=np.float32),
     'cloth_rel_pos_z': np.array([2, 2], dtype=np.float32),
     'cloth_spread': np.array([2], dtype=np.float32),
@@ -25,23 +27,14 @@ SIM_NOISE_STD = {
 }
 
 REAL_NOISE_STD = {
-    'rel_pos': np.array([0.05, 0.05], dtype=np.float32),
-    'vel': np.array([0.01, 0.01], dtype=np.float32),
+    'rel_pos': np.array([0.05, 0.05, 0.05], dtype=np.float32),
+    'vel': np.array([0.01, 0.01, 0.01], dtype=np.float32),
     'cloth_rel_pos_x': np.array([0.02, 0.02, 0.02, 0.02, 0.02], dtype=np.float32),
     'cloth_rel_pos_z': np.array([0.05, 0.05], dtype=np.float32),
     'cloth_spread': np.array([0.05], dtype=np.float32),
     'hand_spread': np.array([0.02], dtype=np.float32),
     'force_vec': np.array([0.1, 0.1, 0.1], dtype=np.float32),
 }
-
-
-def _ensure_2d(x: np.ndarray) -> np.ndarray:
-    """Convert 1D array to 2D array with shape (1, n)."""
-    x = np.asarray(x)
-    if x.ndim == 1:
-        x = x[None, :]
-    return x.astype(np.float32)
-
 
 def _extract_observation_components(obs: np.ndarray) -> Dict[str, np.ndarray]:
     """Extract individual components from raw observation array.
@@ -69,8 +62,10 @@ def _compute_relative_positions(pos: np.ndarray, vel: np.ndarray,
     """Compute relative positions and velocities between fingertip and end-effector."""
     return {
         'rel_pos_x': np.expand_dims(pos[:, 0] - arm_pos[:, 0], axis=1),
+        'rel_pos_y': np.expand_dims(pos[:, 1] - arm_pos[:, 1], axis=1),
         'rel_pos_z': np.expand_dims(pos[:, 2] - arm_pos[:, 2], axis=1),
         'vel_x': np.expand_dims(vel[:, 0], axis=1),
+        'vel_y': np.expand_dims(vel[:, 1], axis=1),
         'vel_z': np.expand_dims(vel[:, 2], axis=1)
     }
 
@@ -124,7 +119,7 @@ def filter_sim_obs(obs: np.ndarray) -> np.ndarray:
         obs: Raw observation array of shape (T, 67+)
         
     Returns:
-        Filtered observation array of shape (T, 16)
+        Filtered observation array of shape (T, 18)
     """
     components = _extract_observation_components(obs)
     
@@ -144,14 +139,16 @@ def filter_sim_obs(obs: np.ndarray) -> np.ndarray:
     # Concatenate all filtered features
     obs_filtered = np.concatenate([
         rel_features['rel_pos_x'],
+        rel_features['rel_pos_y'],
         rel_features['rel_pos_z'],
         rel_features['vel_x'],
+        rel_features['vel_y'],
         rel_features['vel_z'],
+        force_vec,
         cloth_hand_features['cloth_rel_pos_x'],
         cloth_hand_features['cloth_rel_pos_z'],
         cloth_hand_features['cloth_spread'],
         cloth_hand_features['hand_spread'],
-        force_vec
     ], axis=1)
     
     return obs_filtered
@@ -161,14 +158,16 @@ def _build_scaling_vector() -> np.ndarray:
     """Build the scaling vector for observations."""
     return np.array([
         SCALING_FACTORS['rel_pos_x'],
+        SCALING_FACTORS['rel_pos_y'],
         SCALING_FACTORS['rel_pos_z'],
         SCALING_FACTORS['vel_x'],
+        SCALING_FACTORS['vel_y'],
         SCALING_FACTORS['vel_z'],
+        *[SCALING_FACTORS['force_vec']] * 3,
         *[SCALING_FACTORS['cloth_rel_pos_x']] * 5,
         *[SCALING_FACTORS['cloth_rel_pos_z']] * 2,
         SCALING_FACTORS['cloth_spread'],
         SCALING_FACTORS['hand_spread'],
-        *[SCALING_FACTORS['force_vec']] * 3
     ])
 
 
@@ -178,10 +177,10 @@ def scale_sim_obs(obs: np.ndarray) -> np.ndarray:
     Note: X-direction scaling is negative because directions are flipped in real world.
     
     Args:
-        obs: Filtered observation array of shape (T, 16)
+        obs: Filtered observation array of shape (T, 18)
         
     Returns:
-        Scaled observation array of shape (T, 16)
+        Scaled observation array of shape (T, 18)
     """
     scaling_vector = _build_scaling_vector()
     return obs / scaling_vector
@@ -193,19 +192,12 @@ def scale_noise(noise: np.ndarray) -> np.ndarray:
 
 
 def scale_sim_action(action_trimmed: np.ndarray) -> np.ndarray:
-    """Scale simulation actions.
+    """Scale simulation actions."""
     
-    Note: X-direction scaling is negative because directions are flipped in real world.
-    
-    Args:
-        action_trimmed: Action array with 2 dimensions [x, z]
-        
-    Returns:
-        Scaled action array
-    """
     scaling_vector = np.array([
-        SCALING_FACTORS['rel_pos_x'],  # action[0]: x direction (flipped)
-        SCALING_FACTORS['rel_pos_z']   # action[1]: z direction (same)
+        SCALING_FACTORS['vel_x'],  # action[0]: x direction (flipped)
+        SCALING_FACTORS['vel_y'],      # action[1]: y direction (added)
+        SCALING_FACTORS['vel_z']   # action[1]: z direction (same)
     ])
     return action_trimmed / scaling_vector
 
@@ -217,10 +209,10 @@ def _generate_noise(timesteps: int, noise_std) -> np.ndarray:
         timesteps: Number of timesteps (T)
         
     Returns:
-        Noise array of shape (T, 16)
+        Noise array of shape (T, 18)
     """
     # Independent noise per timestep
-    vel_noise = np.random.normal(0, noise_std['vel'], size=(timesteps, 2))
+    vel_noise = np.random.normal(0, noise_std['vel'], size=(timesteps, 3))
     cloth_rel_pos_z_noise = np.random.normal(0, noise_std['cloth_rel_pos_z'], size=(timesteps, 2))
     cloth_spread_noise = np.random.normal(0, noise_std['cloth_spread'], size=(timesteps, 1))
     force_vec_noise = np.random.normal(0, noise_std['force_vec'], size=(timesteps, 3))
@@ -228,12 +220,12 @@ def _generate_noise(timesteps: int, noise_std) -> np.ndarray:
     # Shared noise across all timesteps (one sample per episode)
 
     rel_pos_noise = np.tile(
-        np.random.normal(0, noise_std['rel_pos'], size=(1, 2)),
+        np.random.normal(0, noise_std['rel_pos'], size=(1, 3)),
         (timesteps, 1)
     )
 
     cloth_rel_pos_x_noise = np.tile(
-        np.random.normal(0, noise_std['cloth_rel_pos_x']),
+        np.random.normal(0, noise_std['cloth_rel_pos_x'], size=(1, 5)),
         (timesteps, 1)
     )
     hand_spread_noise = np.tile(
@@ -244,11 +236,11 @@ def _generate_noise(timesteps: int, noise_std) -> np.ndarray:
     return np.concatenate([
         rel_pos_noise,
         vel_noise,
+        force_vec_noise,
         cloth_rel_pos_x_noise,
         cloth_rel_pos_z_noise,
         cloth_spread_noise,
         hand_spread_noise,
-        force_vec_noise
     ], axis=1)
 
 
@@ -256,7 +248,7 @@ def add_noise(obs: Dict[str, np.ndarray], dataset_name: str) -> Dict[str, np.nda
     """Add scaled noise to observations (works for both scaled sim and real observations).
     
     Args:
-        obs: Dictionary containing 'obs' key with array of shape (T, 16)
+        obs: Dictionary containing 'obs' key with array of shape (T, 18)
         
     Returns:
         Modified observation dictionary with noise added
