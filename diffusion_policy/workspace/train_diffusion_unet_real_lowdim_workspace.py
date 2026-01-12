@@ -180,6 +180,26 @@ class TrainDiffusionUnetRealLowdimWorkspace(BaseWorkspace):
                 "provide a pretrained checkpoint with normalizer."
             )
 
+        if cfg.training.freeze_action_normalizer:
+
+            print("Freezing action normalizer Y-axis to real dataset")
+
+            # Hard code normalizer for action in y direction 
+            Y_IDX = 1  # 
+            REAL_Y_SCALE = 0.01  # example: 1 cm per step (use your real limits)
+
+            with torch.no_grad():
+                action_stats = normalizer['action'].params_dict.input_stats
+
+                # override only y dimension
+                action_stats.min[Y_IDX] = -REAL_Y_SCALE
+                action_stats.max[Y_IDX] =  REAL_Y_SCALE
+
+            assert (
+                action_stats.max[Y_IDX] - action_stats.min[Y_IDX]
+            ) > 1e-3, "Y-axis action still degenerate after patch"
+
+
         self.model.set_normalizer(normalizer)
         if cfg.training.use_ema:
             self.ema_model.set_normalizer(normalizer)
@@ -473,3 +493,4 @@ def main(cfg):
 
 if __name__ == "__main__":
     main()
+# %%
