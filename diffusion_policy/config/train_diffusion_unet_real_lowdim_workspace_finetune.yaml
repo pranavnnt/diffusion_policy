@@ -73,14 +73,14 @@ dataloader:
   num_workers: 8
   shuffle: True
   pin_memory: True
-  persistent_workers: False
+  persistent_workers: True
 
 val_dataloader:
   batch_size: 256
   num_workers: 8
   shuffle: False
   pin_memory: True
-  persistent_workers: False
+  persistent_workers: True
 
 optimizer:
   _target_: torch.optim.AdamW
@@ -112,7 +112,7 @@ training:
   tqdm_interval_sec: 1.0
 
   # config/finetune_real.yaml
-  pretrained_checkpoint: /home/pnt8/workspace/dressing_sim_ws/diffusion_policy/data/outputs/2025.12.05_18.43.05_sim_no_domain_encoding_dressing_sim/checkpoints/latest.ckpt
+  # pretrained_checkpoint: /home/pnt8/workspace/dressing_sim_ws/diffusion_policy/data/outputs/2026.01.10_17.39.03_duplicated_3d_data_training_dim36_dressing_sim/checkpoints/latest.ckpt
   resume: False  # False for initial finetuning
 
 eval:

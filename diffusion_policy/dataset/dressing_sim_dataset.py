@@ -32,6 +32,7 @@ class DressingSimDataset(BaseLowdimDataset):
             val_ratio=0.0,
             upsampled=True,
             upsample_multiplier=5, 
+            duplicate_for_pretraining=False
             ):
         super().__init__()
         self.replay_buffer = ReplayBuffer.copy_from_path(
@@ -67,6 +68,7 @@ class DressingSimDataset(BaseLowdimDataset):
 
         self.upsampled = upsampled
         self.upsample_multiplier = upsample_multiplier
+        self.duplicate_for_pretraining = duplicate_for_pretraining
 
     def get_validation_dataset(self):
         """Create a validation dataset using the validation mask."""
@@ -84,8 +86,13 @@ class DressingSimDataset(BaseLowdimDataset):
         return val_set
 
     def get_normalizer(self, mode='gaussian', **kwargs):
-        """Build a multi-field normalizer over the data keys."""
+        
         data = self._sample_to_data(self.replay_buffer)
+    
+        # Apply duplication if enabled
+        if self.duplicate_for_pretraining:
+            data['obs'] = np.concatenate([data['obs'], data['obs']], axis=-1)
+
         normalizer = LinearNormalizer()
         normalizer.fit(data=data, last_n_dims=1, mode=mode, **kwargs)
         return normalizer
@@ -115,16 +122,13 @@ class DressingSimDataset(BaseLowdimDataset):
 
         # Filter observations to extract relevant features
         obs_filtered = filter_sim_obs(obs)
-        assert obs_filtered.shape[1] == 16, (
-            f"Expected filtered obs to have 16 dimensions, got {obs_filtered.shape[1]}"
+        assert obs_filtered.shape[1] == 18, (
+            f"Expected filtered obs to have 18 dimensions, got {obs_filtered.shape[1]}"
         )
-
-        # Extract x and z components from actions
-        act_trimmed = act[:, [0, 2]]
 
         # Apply sim2real scaling transformations
         obs_scaled = scale_sim_obs(obs_filtered)
-        act_scaled = scale_sim_action(act_trimmed)
+        act_scaled = scale_sim_action(act)
 
         data = {
             'obs': obs_scaled,
@@ -165,6 +169,13 @@ class DressingSimDataset(BaseLowdimDataset):
         
         # Add noise augmentation
         data = add_noise(data, "sim")
+
+        # Finally, duplicate for pretraining if specified
+        if self.duplicate_for_pretraining:
+            data['obs'] = np.concatenate([data['obs'], data['obs']], axis=-1)
+            
+        if self.use_domain_encoding:
+            data['domain_encoding'] = data['domain_encoding']
         
         # Convert to torch tensors
         torch_data = dict_apply(data, torch.from_numpy)

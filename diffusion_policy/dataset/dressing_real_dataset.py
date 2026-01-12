@@ -262,8 +262,7 @@ class DressingRealDataset(BaseLowdimDataset):
 
                 # Trim + scale sim actions BEFORE computing normals
                 raw_act = raw_act[:]
-                act_trim = raw_act[:, [0, 2]]
-                act_scaled = scale_sim_action(act_trim)
+                act_scaled = scale_sim_action(raw_act)
 
                 data = {
                     'obs': obs_scaled,
@@ -341,7 +340,7 @@ class DressingRealDataset(BaseLowdimDataset):
         act = sample[self.action_key]  # shape [T, D_a]
 
         obs_scaled = obs_trimmed = obs
-        act_scaled = act_trimmed = act[:, [0, 2]]
+        act_scaled = act_trimmed = act
         
         local_dataset_name = self.dataset_names[sampler_idx]
 
@@ -354,8 +353,8 @@ class DressingRealDataset(BaseLowdimDataset):
             # Real world data: already in correct format
             pass
             
-        assert obs_scaled.shape[1] == 16, (
-            f"Expected obs dim 16, got {obs_scaled.shape[1]}"
+        assert obs_scaled.shape[1] == 36, (
+            f"Expected obs dim 36, got {obs_scaled.shape[1]}"
         )
 
         data = {

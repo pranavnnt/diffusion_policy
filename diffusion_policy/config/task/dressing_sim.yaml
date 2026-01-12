@@ -17,5 +17,6 @@ dataset:
   domain_encoding_dim: 2
   seed: 42
   val_ratio: 0.02
+  duplicate_for_pretraining: True
   upsampled: True
   upsample_multiplier: 4
