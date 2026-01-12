@@ -248,7 +248,7 @@ def add_noise(obs: Dict[str, np.ndarray], dataset_name: str) -> Dict[str, np.nda
     """Add scaled noise to observations (works for both scaled sim and real observations).
     
     Args:
-        obs: Dictionary containing 'obs' key with array of shape (T, 18)
+        obs: Dictionary containing 'obs' key with array of shape (T, 36)
         
     Returns:
         Modified observation dictionary with noise added
@@ -261,8 +261,16 @@ def add_noise(obs: Dict[str, np.ndarray], dataset_name: str) -> Dict[str, np.nda
         noise = _generate_noise(timesteps, SIM_NOISE_STD)
         scaled_noise = scale_noise(noise)
     else:
-        noise = _generate_noise(timesteps, REAL_NOISE_STD)
-        scaled_noise = noise
+
+        if obs_vec.shape[1] == 36:
+            noise1 = _generate_noise(timesteps, SIM_NOISE_STD)
+            scaled_noise1 = scale_noise(noise1)
+            noise2 = _generate_noise(timesteps, REAL_NOISE_STD)
+            scaled_noise2 = noise2
+            scaled_noise = np.concatenate([scaled_noise1, scaled_noise2], axis=1)
+        else:
+            noise = _generate_noise(timesteps, REAL_NOISE_STD)
+            scaled_noise = noise
     
     obs["obs"] = obs_vec + scaled_noise
     return obs

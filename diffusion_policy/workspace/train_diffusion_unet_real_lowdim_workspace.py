@@ -29,6 +29,8 @@ from diffusion_policy.env_runner.base_lowdim_runner import BaseLowdimRunner
 from diffusion_policy.common.checkpoint_util import TopKCheckpointManager
 from diffusion_policy.common.json_logger import JsonLogger
 from diffusion_policy.model.common.lr_scheduler import get_scheduler
+from diffusion_policy.model.common.normalizer import LinearNormalizer
+
 from diffusers.training_utils import EMAModel
 
 OmegaConf.register_new_resolver("eval", eval, replace=True)
@@ -125,20 +127,46 @@ class TrainDiffusionUnetRealLowdimWorkspace(BaseWorkspace):
                 print(f"LOADING PRETRAINED CHECKPOINT")
                 print(f"{'='*60}")
                 print(f"Path: {pretrained_path}")
-                
+
                 payload = torch.load(pretrained_path.open('rb'), pickle_module=dill, map_location='cpu')
-                
+
                 # Load model weights only
                 if 'state_dicts' in payload:
                     self.model.load_state_dict(payload['state_dicts']['model'])
                     print("✓ Model weights loaded")
-                    
+
                     if cfg.training.use_ema and 'ema_model' in payload['state_dicts']:
                         self.ema_model.load_state_dict(payload['state_dicts']['ema_model'])
                         print("✓ EMA model weights loaded")
                 else:
                     raise ValueError("Checkpoint does not contain 'state_dicts'")
-                
+
+                # ALWAYS load normalizer from checkpoint for consistency
+                if 'state_dicts' in payload and 'model' in payload['state_dicts']:
+                    # Extract normalizer from model state dict
+                    model_state = payload['state_dicts']['model']
+
+                    normalizer_dict = {}
+                    for key in model_state.keys():
+                        if key.startswith('normalizer.'):
+                            normalizer_dict[key] = model_state[key]
+
+                    if normalizer_dict:
+                        # Create a new normalizer and load the state
+                        normalizer = LinearNormalizer()
+
+                        # Create a state dict with just normalizer keys
+                        normalizer_state = {}
+                        for key in normalizer_dict.keys():
+                            # Remove 'normalizer.' prefix
+                            new_key = key.replace('normalizer.', '')
+                            normalizer_state[new_key] = normalizer_dict[key]
+
+                        normalizer.load_state_dict(normalizer_state)
+                        print("✓ Normalizer loaded from pretrained checkpoint (overriding dataset normalizer)")
+                    else:
+                        raise ValueError("Pretrained checkpoint does not contain normalizer")
+
                 print("✓ Using fresh optimizer (not loaded from checkpoint)")
                 print("✓ Starting from epoch 0 and global_step 0")
                 print(f"{'='*60}\n")
