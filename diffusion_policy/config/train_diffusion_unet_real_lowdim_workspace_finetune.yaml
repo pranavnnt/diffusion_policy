@@ -110,10 +110,10 @@ training:
   max_val_steps: null
   # misc
   tqdm_interval_sec: 1.0
-  freeze_action_normalizer: True
+  freeze_action_normalizer: False
 
   # config/finetune_real.yaml
-  pretrained_checkpoint: /home/pnt8/workspace/dressing_sim_ws/diffusion_policy/data/outputs/real/2026.01.12_14.16.39_duplicated_3d_data_training_dim36_freeze_action_normalizer_dressing_real_first_arm_finetune/checkpoints/latest.ckpt
+  pretrained_checkpoint: /home/pnt8/workspace/dressing_sim_ws/diffusion_policy/data/outputs/2026.01.13_17.21.01_old_sim_training_dressing_sim/checkpoints/latest.ckpt
   resume: False  # False for initial finetuning
 
 logging:

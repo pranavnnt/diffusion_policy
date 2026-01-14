@@ -1,7 +1,7 @@
 name: dressing_sim
 
-obs_dim: 36
-action_dim: 3
+obs_dim: 16
+action_dim: 2
 keypoint_dim: 0
 obs_eef_target: False
 
@@ -17,6 +17,6 @@ dataset:
   domain_encoding_dim: 2
   seed: 42
   val_ratio: 0.02
-  duplicate_for_pretraining: True
+  duplicate_for_pretraining: False
   upsampled: True
   upsample_multiplier: 4

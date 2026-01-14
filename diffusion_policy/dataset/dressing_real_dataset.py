@@ -12,6 +12,7 @@ from diffusion_policy.model.common.normalizer import LinearNormalizer
 from diffusion_policy.dataset.base_dataset import BaseLowdimDataset
 from diffusion_policy.dressing.sim2real_transforms import (
     filter_sim_obs,
+    filter_real_obs,
     scale_sim_obs,
     scale_sim_action,
     add_noise
@@ -262,7 +263,9 @@ class DressingRealDataset(BaseLowdimDataset):
 
                 # Trim + scale sim actions BEFORE computing normals
                 raw_act = raw_act[:]
-                act_scaled = scale_sim_action(raw_act)
+                act_trimmed = raw_act[:, [0, 2]]
+
+                act_scaled = scale_sim_action(act_trimmed)
 
                 data = {
                     'obs': obs_scaled,
@@ -340,7 +343,8 @@ class DressingRealDataset(BaseLowdimDataset):
         act = sample[self.action_key]  # shape [T, D_a]
 
         obs_scaled = obs_trimmed = obs
-        act_scaled = act_trimmed = act
+        act_trimmed = act[:, [0, 2]]
+        act_scaled = act_trimmed
         
         local_dataset_name = self.dataset_names[sampler_idx]
 
@@ -350,11 +354,11 @@ class DressingRealDataset(BaseLowdimDataset):
             obs_scaled = scale_sim_obs(obs_trimmed)
             act_scaled = scale_sim_action(act_trimmed)
         else:
-            # Real world data: already in correct format
-            pass
+            obs_trimmed = filter_real_obs(obs)
+            obs_scaled = obs_trimmed
             
-        assert obs_scaled.shape[1] == 36, (
-            f"Expected obs dim 36, got {obs_scaled.shape[1]}"
+        assert obs_scaled.shape[1] == 16, (
+            f"Expected obs dim 36 from {local_dataset_name}, got {obs_scaled.shape[1]}"
         )
 
         data = {

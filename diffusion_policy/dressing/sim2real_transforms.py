@@ -4,10 +4,10 @@ from typing import Dict
 # Constants for better maintainability
 SCALING_FACTORS = {
     'rel_pos_x': -180,
-    'rel_pos_y': 180,
+    # 'rel_pos_y': 180,
     'rel_pos_z': 180,
     'vel_x': -180,
-    'vel_y': 180,
+    # 'vel_y': 180,
     'vel_z': 180,
     'cloth_rel_pos_x': -180,  # applied to 5 dimensions
     'cloth_rel_pos_z': 180,   # applied to 2 dimensions
@@ -17,8 +17,8 @@ SCALING_FACTORS = {
 }
 
 SIM_NOISE_STD = {
-    'rel_pos': np.array([1, 1, 1], dtype=np.float32),
-    'vel': np.array([0.5, 0.5, 0.5], dtype=np.float32),
+    'rel_pos': np.array([1, 1], dtype=np.float32),
+    'vel': np.array([0.5, 0.5], dtype=np.float32),
     'cloth_rel_pos_x': np.array([1, 1, 1, 1, 1], dtype=np.float32),
     'cloth_rel_pos_z': np.array([2, 2], dtype=np.float32),
     'cloth_spread': np.array([2], dtype=np.float32),
@@ -27,8 +27,8 @@ SIM_NOISE_STD = {
 }
 
 REAL_NOISE_STD = {
-    'rel_pos': np.array([0.05, 0.05, 0.05], dtype=np.float32),
-    'vel': np.array([0.01, 0.01, 0.01], dtype=np.float32),
+    'rel_pos': np.array([0.05, 0.05], dtype=np.float32),
+    'vel': np.array([0.01, 0.01], dtype=np.float32),
     'cloth_rel_pos_x': np.array([0.02, 0.02, 0.02, 0.02, 0.02], dtype=np.float32),
     'cloth_rel_pos_z': np.array([0.05, 0.05], dtype=np.float32),
     'cloth_spread': np.array([0.05], dtype=np.float32),
@@ -62,10 +62,10 @@ def _compute_relative_positions(pos: np.ndarray, vel: np.ndarray,
     """Compute relative positions and velocities between fingertip and end-effector."""
     return {
         'rel_pos_x': np.expand_dims(pos[:, 0] - arm_pos[:, 0], axis=1),
-        'rel_pos_y': np.expand_dims(pos[:, 1] - arm_pos[:, 1], axis=1),
+        # 'rel_pos_y': np.expand_dims(pos[:, 1] - arm_pos[:, 1], axis=1),
         'rel_pos_z': np.expand_dims(pos[:, 2] - arm_pos[:, 2], axis=1),
         'vel_x': np.expand_dims(vel[:, 0], axis=1),
-        'vel_y': np.expand_dims(vel[:, 1], axis=1),
+        # 'vel_y': np.expand_dims(vel[:, 1], axis=1),
         'vel_z': np.expand_dims(vel[:, 2], axis=1)
     }
 
@@ -139,10 +139,10 @@ def filter_sim_obs(obs: np.ndarray) -> np.ndarray:
     # Concatenate all filtered features
     obs_filtered = np.concatenate([
         rel_features['rel_pos_x'],
-        rel_features['rel_pos_y'],
+        # rel_features['rel_pos_y'],
         rel_features['rel_pos_z'],
         rel_features['vel_x'],
-        rel_features['vel_y'],
+        # rel_features['vel_y'],
         rel_features['vel_z'],
         force_vec,
         cloth_hand_features['cloth_rel_pos_x'],
@@ -150,18 +150,49 @@ def filter_sim_obs(obs: np.ndarray) -> np.ndarray:
         cloth_hand_features['cloth_spread'],
         cloth_hand_features['hand_spread'],
     ], axis=1)
+
+    assert obs_filtered.shape[1] == 16
     
     return obs_filtered
 
+def filter_real_obs(obs: np.ndarray) -> np.ndarray:
+
+    assert obs.shape[1] == 36, f"Expected real obs to have 36 dimensions, got {obs.shape[1]}"
+
+    obs_front_only = obs[:, :18]        # using front data only
+
+    pos = obs_front_only[:, :3]
+    vel = obs_front_only[:, 3:6]
+    force = obs_front_only[:, 6:9]
+    cloth_rel_pos_x = obs_front_only[:, 9:14]
+    cloth_rel_pos_z = obs_front_only[:, 14:16]
+    cloth_spread = obs_front_only[:, 16:17]
+    hand_spread = obs_front_only[:, 17:18]
+
+    pos_xz = pos[:, [0, 2]]
+    vel_xz = vel[:, [0, 2]]
+
+    obs_filtered =  np.concatenate([
+        pos_xz,
+        vel_xz,
+        force,
+        cloth_rel_pos_x,
+        cloth_rel_pos_z,
+        cloth_spread,
+        hand_spread,
+    ], axis=1)
+    assert obs_filtered.shape[1] == 16, f"Expected filtered real obs to have 16 dimensions, got {obs_filtered.shape[1]}"
+
+    return obs_filtered
 
 def _build_scaling_vector() -> np.ndarray:
     """Build the scaling vector for observations."""
     return np.array([
         SCALING_FACTORS['rel_pos_x'],
-        SCALING_FACTORS['rel_pos_y'],
+        # SCALING_FACTORS['rel_pos_y'],
         SCALING_FACTORS['rel_pos_z'],
         SCALING_FACTORS['vel_x'],
-        SCALING_FACTORS['vel_y'],
+        # SCALING_FACTORS['vel_y'],
         SCALING_FACTORS['vel_z'],
         *[SCALING_FACTORS['force_vec']] * 3,
         *[SCALING_FACTORS['cloth_rel_pos_x']] * 5,
@@ -196,7 +227,7 @@ def scale_sim_action(action_trimmed: np.ndarray) -> np.ndarray:
     
     scaling_vector = np.array([
         SCALING_FACTORS['vel_x'],  # action[0]: x direction (flipped)
-        SCALING_FACTORS['vel_y'],      # action[1]: y direction (added)
+        # SCALING_FACTORS['vel_y'],      # action[1]: y direction (added)
         SCALING_FACTORS['vel_z']   # action[1]: z direction (same)
     ])
     return action_trimmed / scaling_vector
@@ -212,7 +243,7 @@ def _generate_noise(timesteps: int, noise_std) -> np.ndarray:
         Noise array of shape (T, 18)
     """
     # Independent noise per timestep
-    vel_noise = np.random.normal(0, noise_std['vel'], size=(timesteps, 3))
+    vel_noise = np.random.normal(0, noise_std['vel'], size=(timesteps, 2))
     cloth_rel_pos_z_noise = np.random.normal(0, noise_std['cloth_rel_pos_z'], size=(timesteps, 2))
     cloth_spread_noise = np.random.normal(0, noise_std['cloth_spread'], size=(timesteps, 1))
     force_vec_noise = np.random.normal(0, noise_std['force_vec'], size=(timesteps, 3))
@@ -220,7 +251,7 @@ def _generate_noise(timesteps: int, noise_std) -> np.ndarray:
     # Shared noise across all timesteps (one sample per episode)
 
     rel_pos_noise = np.tile(
-        np.random.normal(0, noise_std['rel_pos'], size=(1, 3)),
+        np.random.normal(0, noise_std['rel_pos'], size=(1, 2)),
         (timesteps, 1)
     )
 
