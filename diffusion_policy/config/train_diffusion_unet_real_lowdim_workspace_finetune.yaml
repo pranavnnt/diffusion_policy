@@ -117,7 +117,7 @@ training:
   resume: False  # False for initial finetuning
 
 eval:
-  ckpt: /home/dressing/workspace/bimanual_ws/src/bimanual_dressing/src/dressing_policies/weights/2026.01.10_20.07.47_duplicated_3d_data_training_dim36_dressing_real_first_arm_finetune/checkpoints/latest.ckpt
+  ckpt: /home/dressing/workspace/bimanual_ws/src/bimanual_dressing/src/dressing_policies/weights/2026.01.17_12.24.45_clean_data_dressing_real_first_arm_finetune/checkpoints/latest.ckpt
 
 logging:
   project: dressing_real
