@@ -14,6 +14,7 @@ from diffusion_policy.dressing.sim2real_transforms import (
     scale_sim_action,
     add_noise
 )
+from diffusion_policy.dataset.util import fix_small_variance_normalizer
 
 
 class DressingSimDataset(BaseLowdimDataset):
@@ -95,6 +96,11 @@ class DressingSimDataset(BaseLowdimDataset):
 
         normalizer = LinearNormalizer()
         normalizer.fit(data=data, last_n_dims=1, mode=mode, **kwargs)
+
+        # Fix small variance dimensions
+        fix_small_variance_normalizer(normalizer, key='obs')
+        fix_small_variance_normalizer(normalizer, key='action')
+
         return normalizer
 
     def get_all_actions(self) -> torch.Tensor:
@@ -122,8 +128,8 @@ class DressingSimDataset(BaseLowdimDataset):
 
         # Filter observations to extract relevant features
         obs_filtered = filter_sim_obs(obs)
-        assert obs_filtered.shape[1] == 16, (
-            f"Expected filtered obs to have 16 dimensions, got {obs_filtered.shape[1]}"
+        assert obs_filtered.shape[1] == 11, (
+            f"Expected filtered obs to have 11 dimensions, got {obs_filtered.shape[1]}"
         )
 
         # Extract x and z components from actions
