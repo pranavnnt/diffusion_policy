@@ -26,7 +26,7 @@ dataset:
     upsample_multiplier: 4
     domain_encoding: [1, 0]
   # Real datasets get all the training weight
-  - path: /scratch/pnt8/dressing_demos/sim2real/real/Dec31_combined_state36_upsampled_x2.zarr    
+  - path: /scratch/pnt8/dressing_demos/sim2real/real/Jan16_combined_upsampled_x2.zarr    
     name: real_first_arm
     max_train_episodes: null
     sampling_weight: 1.0  # 100% real arm 1
