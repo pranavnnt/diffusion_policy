@@ -17,6 +17,7 @@ from diffusion_policy.dressing.sim2real_transforms import (
     scale_sim_action,
     add_noise
 )
+from diffusion_policy.dataset.util import fix_small_variance_normalizer
 
 
 class DressingRealDataset(BaseLowdimDataset):
@@ -290,6 +291,11 @@ class DressingRealDataset(BaseLowdimDataset):
         assert len(input_stats) > 0, "No simulation datasets found for computing normalizer"
         normalizer = LinearNormalizer()
         normalizer.fit_from_input_stats(input_stats_dict=input_stats)
+
+        # Fix small variance dimensions
+        fix_small_variance_normalizer(normalizer, key='obs')
+        fix_small_variance_normalizer(normalizer, key='action')
+
         return normalizer
 
     def get_sample_probabilities(self) -> np.ndarray:
@@ -357,8 +363,8 @@ class DressingRealDataset(BaseLowdimDataset):
             obs_trimmed = filter_real_obs(obs)
             obs_scaled = obs_trimmed
             
-        assert obs_scaled.shape[1] == 16, (
-            f"Expected obs dim 36 from {local_dataset_name}, got {obs_scaled.shape[1]}"
+        assert obs_scaled.shape[1] == 11, (
+            f"Expected obs dim 11 from {local_dataset_name}, got {obs_scaled.shape[1]}"
         )
 
         data = {
