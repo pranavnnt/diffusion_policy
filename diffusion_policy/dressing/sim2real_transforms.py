@@ -157,9 +157,9 @@ def filter_sim_obs(obs: np.ndarray) -> np.ndarray:
 
 def filter_real_obs(obs: np.ndarray) -> np.ndarray:
 
-    assert obs.shape[1] == 36, f"Expected real obs to have 36 dimensions, got {obs.shape[1]}"
+    assert obs.shape[1] == 38, f"Expected real obs to have 38 dimensions, got {obs.shape[1]}"
 
-    obs_front_only = obs[:, :18]        # using front data only
+    obs_front_only = obs[:, :19]        # using front data only
 
     pos = obs_front_only[:, :3]
     vel = obs_front_only[:, 3:6]
@@ -168,6 +168,7 @@ def filter_real_obs(obs: np.ndarray) -> np.ndarray:
     cloth_rel_pos_z = obs_front_only[:, 14:16]
     cloth_spread = obs_front_only[:, 16:17]
     hand_spread = obs_front_only[:, 17:18]
+    visible_hand_ratio = obs_front_only[:, 18:19]
 
     pos_xz = pos[:, [0, 2]]
     vel_xz = vel[:, [0, 2]]
@@ -178,6 +179,7 @@ def filter_real_obs(obs: np.ndarray) -> np.ndarray:
         force,
         cloth_rel_pos_z,
         cloth_spread,
+        visible_hand_ratio
     ], axis=1)
     assert obs_filtered.shape[1] == 11, f"Expected filtered real obs to have 11 dimensions, got {obs_filtered.shape[1]}"
 
@@ -273,7 +275,7 @@ def add_noise(obs: Dict[str, np.ndarray], dataset_name: str) -> Dict[str, np.nda
     """Add scaled noise to observations (works for both scaled sim and real observations).
     
     Args:
-        obs: Dictionary containing 'obs' key with array of shape (T, 36)
+        obs: Dictionary containing 'obs' key with array of shape (T, 38)
         
     Returns:
         Modified observation dictionary with noise added
@@ -287,7 +289,7 @@ def add_noise(obs: Dict[str, np.ndarray], dataset_name: str) -> Dict[str, np.nda
         scaled_noise = scale_noise(noise)
     else:
 
-        if obs_vec.shape[1] == 36:
+        if obs_vec.shape[1] == 38:
             noise1 = _generate_noise(timesteps, SIM_NOISE_STD)
             scaled_noise1 = scale_noise(noise1)
             noise2 = _generate_noise(timesteps, REAL_NOISE_STD)

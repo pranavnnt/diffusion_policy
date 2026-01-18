@@ -363,8 +363,8 @@ class DressingRealDataset(BaseLowdimDataset):
             obs_trimmed = filter_real_obs(obs)
             obs_scaled = obs_trimmed
             
-        assert obs_scaled.shape[1] == 16, (
-            f"Expected obs dim 36 from {local_dataset_name}, got {obs_scaled.shape[1]}"
+        assert obs_scaled.shape[1] == 11, (
+            f"Expected obs dim 11 from {local_dataset_name}, got {obs_scaled.shape[1]}"
         )
 
         data = {
