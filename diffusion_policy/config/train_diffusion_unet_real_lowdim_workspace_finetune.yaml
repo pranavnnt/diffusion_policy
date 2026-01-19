@@ -113,7 +113,7 @@ training:
   freeze_action_normalizer: False
 
   # config/finetune_real.yaml
-  pretrained_checkpoint: /home/pnt8/workspace/dressing_sim_ws/diffusion_policy/data/outputs/2026.01.13_17.21.01_old_sim_training_dressing_sim/checkpoints/latest.ckpt
+  # pretrained_checkpoint: /home/pnt8/workspace/dressing_sim_ws/diffusion_policy/data/outputs/2026.01.13_17.21.01_old_sim_training_dressing_sim/checkpoints/latest.ckpt
   resume: False  # False for initial finetuning
 
 logging:
