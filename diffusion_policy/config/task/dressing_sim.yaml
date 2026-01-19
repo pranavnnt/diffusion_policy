@@ -19,4 +19,4 @@ dataset:
   val_ratio: 0.02
   duplicate_for_pretraining: False
   upsampled: True
-  upsample_multiplier: 4
+  upsample_multiplier: 2

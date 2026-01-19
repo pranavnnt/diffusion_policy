@@ -17,16 +17,16 @@ dataset:
   domain_encoding_dim: 2
   zarr_configs:
   # Keep sim dataset ONLY for computing normalizer
-  - path: /home/dressing/workspace/bimanual_ws/src/bimanual_dressing/src/dressing_policies/demos/cloth_threading/inference/sim/halton_base_dagger_rd2_x1_aligned_upsampled_x4.zarr
+  - path: /scratch/pnt8/dressing_demos/sim/halton_base_dagger_rd2_x1_aligned_upsampled_x4.zarr
     name: sim
     max_train_episodes: 400  # ← SET TO 0! No training data
     sampling_weight: 0.0   # ← SET TO 0! Never sampled
     val_ratio: 0.0         # ← No validation data either
     upsampled: True
-    upsample_multiplier: 4
+    upsample_multiplier: 2
     domain_encoding: [1, 0]
   # Real datasets get all the training weight
-  - path: /home/dressing/workspace/bimanual_ws/src/bimanual_dressing/src/dressing_policies/demos/cloth_threading/inference/real/Jan16_combined_upsampled_x2.zarr    
+  - path: /scratch/pnt8/dressing_demos/real/right/Jan18_combined_upsampled_x2.zarr    
     name: real_first_arm
     max_train_episodes: null
     sampling_weight: 1.0  # 100% real arm 1
