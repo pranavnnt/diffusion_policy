@@ -112,6 +112,10 @@ training:
   # misc
   tqdm_interval_sec: 1.0
 
+  # config/finetune_real.yaml
+  pretrained_checkpoint: /home/pnt8/workspace/dressing_sim_ws/diffusion_policy/data/outputs/2026.01.19_12.28.07_upsampled_x2_dressing_sim/checkpoints/latest.ckpt
+  resume: False  # False for initial finetuning
+
 logging:
   project: dressing_sim
   resume: True

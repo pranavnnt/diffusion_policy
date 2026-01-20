@@ -23,5 +23,3 @@ dataset:
       max_train_episodes: null
       sampling_weight: 1.0
       val_ratio: 0.02
-      upsampled: True
-      upsample_multiplier: 4

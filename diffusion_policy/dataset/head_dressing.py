@@ -11,21 +11,15 @@ from diffusion_policy.common.sampler import (
 from diffusion_policy.model.common.normalizer import LinearNormalizer
 from diffusion_policy.dataset.base_dataset import BaseLowdimDataset
 from diffusion_policy.dressing.head_transforms import (
-    filter_sim_obs,
-    filter_real_obs,
-    scale_sim_obs,
-    scale_sim_action,
+    filter_head_obs,
     add_noise
-)
+)   
+
+from diffusion_policy.dataset.util import fix_small_variance_normalizer
 
 
 class HeadDressingDataset(BaseLowdimDataset):
-    """Dataset for dressing task supporting both simulation and real-world data.
-    
-    This dataset can load multiple zarr datasets (sim and/or real) and sample from them
-    with configurable probabilities. It handles domain-specific transformations and
-    provides domain encodings for domain adaptation.
-    """
+    """Dataset for head dressing task """
     
     def __init__(
         self,
@@ -64,7 +58,6 @@ class HeadDressingDataset(BaseLowdimDataset):
         self.samplers = []
         self.sample_probabilities = []
         self.zarr_paths = []
-        self.upsample_multipliers = []
 
         print(f"Datasets included: {self.include_datasets}")
 
@@ -128,23 +121,8 @@ class HeadDressingDataset(BaseLowdimDataset):
             self.train_masks.append(train_mask)
             self.val_masks.append(val_mask)
 
-            # Handle upsampling configuration
-            assert 'upsampled' in zarr_config, (
-                "Must specify if dataset is upsampled or not, in zarr_config"
-            )
-            assert 'upsample_multiplier' in zarr_config, (
-                "Must specify upsample_multiplier in zarr_config"
-            )
-            upsampled = zarr_config['upsampled']
-            upsample_multiplier = zarr_config['upsample_multiplier'] if upsampled else 1
-            if upsampled:
-                assert upsample_multiplier > 1, (
-                    "upsample_multiplier must be greater than 1 for upsampled datasets"
-                )
-            self.upsample_multipliers.append(upsample_multiplier)
+            seq_len = self.horizon
 
-            # Get sequence length
-            seq_len = self.horizon * upsample_multiplier if upsampled else self.horizon
 
             # Create sampler
             sampler = SequenceSampler(
@@ -152,8 +130,7 @@ class HeadDressingDataset(BaseLowdimDataset):
                 sequence_length=seq_len,
                 pad_before=self.pad_before,
                 pad_after=self.pad_after,
-                episode_mask=train_mask,
-                stride=upsample_multiplier
+                episode_mask=train_mask
             )
             self.samplers.append(sampler)
 
@@ -202,21 +179,19 @@ class HeadDressingDataset(BaseLowdimDataset):
         val_set.train_masks = [self.train_masks[index]]
         val_set.val_masks = [self.val_masks[index]]
         val_set.zarr_paths = [self.zarr_paths[index]]
-        val_set.upsample_multipliers = [self.upsample_multipliers[index]]
         val_set.sample_probabilities = np.array([1.0])
         val_set.domain_encoding_dim = self.domain_encoding_dim  # ADD THIS
         val_set._original_dataset_idx = index  # ADD THIS - track which dataset (0=sim, 1=real)
 
         # Create validation sampler
-        seq_len = self.horizon * self.upsample_multipliers[index]
+        seq_len = self.horizon
         val_set.samplers = [
             SequenceSampler(
                 replay_buffer=replay_buffer,
                 sequence_length=seq_len,
                 pad_before=self.pad_before,
                 pad_after=self.pad_after,
-                episode_mask=self.val_masks[index],
-                stride=self.upsample_multipliers[index]
+                episode_mask=self.val_masks[index]
             )
         ]
 
@@ -244,24 +219,11 @@ class HeadDressingDataset(BaseLowdimDataset):
             raw_obs = replay_buffer[self.obs_key][:]
             raw_act = replay_buffer[self.action_key][:]
             
-            if self.dataset_names[i].startswith("sim"):
-                # Simulation data: apply full transformation pipeline
-                obs_filt = filter_sim_obs(raw_obs)
-                obs_scaled = scale_sim_obs(obs_filt)
-                
-                act_trimmed = raw_act[:, [0, 2]]
-                act_scaled = scale_sim_action(act_trimmed)
-            else:
-                # Real data: filter obs and trim actions (no scaling)
-                obs_filt = filter_real_obs(raw_obs)
-                obs_scaled = obs_filt
-                
-                act_trimmed = raw_act[:, [0, 2]]
-                act_scaled = act_trimmed
+            assert raw_obs.shape[-1] == 29
             
             data = {
-                'obs': obs_scaled,
-                'action': act_scaled
+                'obs': raw_obs,
+                'action': raw_act
             }
             normalizer = LinearNormalizer()
             normalizer.fit(data=data, last_n_dims=1, mode=mode, **kwargs)
@@ -281,6 +243,9 @@ class HeadDressingDataset(BaseLowdimDataset):
         assert len(input_stats) > 0, "No datasets found for computing normalizer"
         normalizer = LinearNormalizer()
         normalizer.fit_from_input_stats(input_stats_dict=input_stats)
+        # Fix small variance dimensions
+        fix_small_variance_normalizer(normalizer, key='obs')
+        fix_small_variance_normalizer(normalizer, key='action')
         return normalizer
         
 
@@ -333,28 +298,17 @@ class HeadDressingDataset(BaseLowdimDataset):
         # Rename to the standard keys the policy expects
         obs = sample[self.obs_key]  # shape [T, D_o]
         act = sample[self.action_key]  # shape [T, D_a]
-
-        obs_scaled = obs_trimmed = obs
-        act_scaled = act
-        
         local_dataset_name = self.dataset_names[sampler_idx]
 
-        if local_dataset_name.startswith("sim"):
-            # Simulation data: apply full transformation pipeline
-            obs_trimmed = filter_sim_obs(obs)
-            obs_scaled = scale_sim_obs(obs_trimmed)
-            act_scaled = scale_sim_action(act)
-        else:
-            obs_trimmed = filter_real_obs(obs)
-            obs_scaled = obs_trimmed
+        obs_filtered = filter_head_obs(obs)
             
-        assert obs_scaled.shape[1] == 29, (
-            f"Expected obs dim 29 from {local_dataset_name}, got {obs_scaled.shape[1]}"
+        assert obs_filtered.shape[1] == 23, (
+            f"Expected obs dim 23 from {local_dataset_name}, got {obs_filtered.shape[1]}"
         )
 
         data = {
-            'obs': obs_scaled,      # shape [T, D_o]
-            'action': act_scaled,   # shape [T, D_a]
+            'obs': obs_filtered,      # shape [T, D_o]
+            'action': act,   # shape [T, D_a]
         }
 
         if self.use_domain_encoding:
