@@ -1,13 +1,13 @@
 name: dressing_sim
 
-obs_dim: 16
+obs_dim: 11
 action_dim: 2
 keypoint_dim: 0
 obs_eef_target: False
 
 dataset:
   _target_: diffusion_policy.dataset.dressing_sim_dataset.DressingSimDataset
-  zarr_path: /home/sj887/data/Jan17n_head1.zarr
+  zarr_path: /scratch/pnt8/dressing_demos/sim/halton_base_dagger_rd2_x1_aligned_upsampled_x4.zarr
   horizon: ${horizon}
   pad_before: ${eval:'${n_obs_steps}-1'}
   pad_after: ${eval:'${n_action_steps}-1'}
@@ -19,4 +19,4 @@ dataset:
   val_ratio: 0.02
   duplicate_for_pretraining: False
   upsampled: True
-  upsample_multiplier: 4
+  upsample_multiplier: 2
