@@ -140,7 +140,6 @@ class TrainDiffusionUnetLowdimWorkspace(BaseWorkspace):
         )
 
         # device transfer
-        # print(f"Using device: {cfg.training.device}")
         device = torch.device(cfg.training.device)
         self.model.to(device)
         if self.ema_model is not None:
