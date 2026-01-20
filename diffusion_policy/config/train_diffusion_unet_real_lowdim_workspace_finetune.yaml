@@ -1,9 +1,9 @@
 defaults:
   - _self_
-  - task: dressing_real
+  - task: dressing_real_finetune
 
-name: dressing_real
-_target_: diffusion_policy.workspace.train_diffusion_unet_lowdim_workspace.TrainDiffusionUnetLowdimWorkspace
+name: dressing_real_finetune
+_target_: diffusion_policy.workspace.train_diffusion_unet_real_lowdim_workspace_finetune.TrainDiffusionUnetRealLowdimWorkspaceFinetune
 
 obs_dim: ${task.obs_dim}
 action_dim: ${task.action_dim}
@@ -22,7 +22,7 @@ obs_as_global_cond: True
 pred_action_steps_only: False
 
 policy:
-  _target_: diffusion_policy.policy.diffusion_unet_lowdim_policy.DiffusionUnetLowdimPolicy
+  _target_: diffusion_policy.policy.diffusion_unet_real_lowdim_policy.DiffusionUnetRealLowdimPolicy
 
   model:
     _target_: diffusion_policy.model.diffusion.conditional_unet1d.ConditionalUnet1D
@@ -70,17 +70,17 @@ ema:
 
 dataloader:
   batch_size: 256
-  num_workers: 1
+  num_workers: 8
   shuffle: True
   pin_memory: True
-  persistent_workers: False
+  persistent_workers: True
 
 val_dataloader:
   batch_size: 256
-  num_workers: 1
+  num_workers: 8
   shuffle: False
   pin_memory: True
-  persistent_workers: False
+  persistent_workers: True
 
 optimizer:
   _target_: torch.optim.AdamW
@@ -93,11 +93,11 @@ training:
   device: "cuda:0"
   seed: 42
   debug: False
-  resume: False
+  resume: True
   # optimization
   lr_scheduler: cosine
   lr_warmup_steps: 1000
-  num_epochs: 50
+  num_epochs: 30
   gradient_accumulate_every: 1
   use_ema: True
   # training loop control
@@ -111,13 +111,14 @@ training:
   max_val_steps: null
   # misc
   tqdm_interval_sec: 1.0
+  freeze_action_normalizer: False
 
   # config/finetune_real.yaml
   pretrained_checkpoint: /home/pnt8/workspace/dressing_sim_ws/diffusion_policy/data/outputs/2026.01.19_12.28.07_upsampled_x2_dressing_sim/checkpoints/latest.ckpt
   resume: False  # False for initial finetuning
 
 logging:
-  project: dressing_sim
+  project: dressing_real
   resume: True
   mode: online
   name: ${now:%Y.%m.%d-%H.%M.%S}_${name}_${task_name}
@@ -135,14 +136,14 @@ checkpoint:
   save_last_snapshot: False
 
 multi_run:
-  run_dir: data/outputs/${now:%Y.%m.%d}/${now:%H.%M.%S}_${name}_${task_name}
+  run_dir: data/outputs/real_finetune/${now:%Y.%m.%d}/${now:%H.%M.%S}_${name}_${task_name}
   wandb_name_base: ${now:%Y.%m.%d-%H.%M.%S}_${name}_${task_name}
 
 hydra:
   job:
     override_dirname: ${name}
   run:
-    dir: data/outputs/${now:%Y.%m.%d}_${now:%H.%M.%S}_${name}_${task_name}
+    dir: data/outputs/real/${now:%Y.%m.%d}_${now:%H.%M.%S}_${name}_${task_name}
   sweep:
-    dir: data/outputs/${now:%Y.%m.%d}_${now:%H.%M.%S}_${name}_${task_name}
+    dir: data/outputs/real/${now:%Y.%m.%d}_${now:%H.%M.%S}_${name}_${task_name}
     subdir: ${hydra.job.num}

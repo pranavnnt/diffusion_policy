@@ -28,7 +28,6 @@ from diffusion_policy.env_runner.base_lowdim_runner import BaseLowdimRunner
 from diffusion_policy.common.checkpoint_util import TopKCheckpointManager
 from diffusion_policy.common.json_logger import JsonLogger
 from diffusion_policy.model.common.lr_scheduler import get_scheduler
-from diffusion_policy.model.common.normalizer import LinearNormalizer
 from diffusers.training_utils import EMAModel
 
 OmegaConf.register_new_resolver("eval", eval, replace=True)
@@ -59,8 +58,6 @@ class TrainDiffusionTransformerLowdimWorkspace(BaseWorkspace):
 
         self.global_step = 0
         self.epoch = 0
-
-        print(f"finished initializing workspace")
 
     def run(self):
         cfg = copy.deepcopy(self.cfg)
@@ -140,13 +137,11 @@ class TrainDiffusionTransformerLowdimWorkspace(BaseWorkspace):
         )
 
         # device transfer
-        print(f"Using device: {cfg.training.device}")
         device = torch.device(cfg.training.device)
         self.model.to(device)
         if self.ema_model is not None:
             self.ema_model.to(device)
         optimizer_to(self.optimizer, device)
-        print(f"Model moved to device: {self.model.device}")
 
         # save batch for sampling
         train_sampling_batch = None

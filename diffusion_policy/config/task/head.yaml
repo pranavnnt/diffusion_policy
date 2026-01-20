@@ -1,4 +1,4 @@
-name: dressing_real
+name: head_dressing
 
 obs_dim: 23
 action_dim: 6
