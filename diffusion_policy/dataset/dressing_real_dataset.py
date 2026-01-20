@@ -223,74 +223,66 @@ class DressingRealDataset(BaseLowdimDataset):
         return val_set
 
     def get_normalizer(self, mode: str = 'limits', **kwargs) -> Optional[LinearNormalizer]:
-        """Compute normalizer from simulation data.
+        """Compute normalizer from simulation or real data.
         
-        For fine-tuning with real data only, returns None (normalizer should be 
-        loaded from pretrained checkpoint). For datasets with simulation data,
-        computes normalizer statistics from transformed simulation observations.
+        If simulation data exists, computes normalizer from transformed simulation observations.
+        Otherwise, computes normalizer from real data.
         
         Args:
             mode: Normalization mode ('limits' supported)
             
         Returns:
-            LinearNormalizer if sim data exists, None otherwise
+            LinearNormalizer computed from available data
         """
-        # Compute mins and maxes
-        assert mode == 'limits', "Only supports limits mode"
-        input_stats = {}
-
         # Check if we have any sim datasets
         has_sim = any(name.startswith("sim") for name in self.dataset_names)
-
-        if not has_sim:
-            # For finetuning: Return None - normalizer will be loaded from checkpoint
-            print("No sim datasets found. Normalizer should be loaded from pretrained checkpoint.")
-            return None
-
-        # Original sim-based normalization code
+        
+        input_stats = {}
+        
         for i, replay_buffer in enumerate(self.replay_buffers):
+            # Convert zarr arrays to numpy for fancy indexing
+            raw_obs = replay_buffer[self.obs_key][:]
+            raw_act = replay_buffer[self.action_key][:]
             
-            # Use only sim data for normalization
             if self.dataset_names[i].startswith("sim"):
-                raw_obs = replay_buffer[self.obs_key]
-                raw_act = replay_buffer[self.action_key]
-
-                assert raw_obs.shape[-1] == 37, f"Shape of raw_obs is {raw_obs.shape}, expected last dim to be 37"
-
-                # Filter & scale ALL sim obs BEFORE computing normals
+                # Simulation data: apply full transformation pipeline
                 obs_filt = filter_sim_obs(raw_obs)
                 obs_scaled = scale_sim_obs(obs_filt)
-
-                # Trim + scale sim actions BEFORE computing normals
-                raw_act = raw_act[:]
+                
                 act_trimmed = raw_act[:, [0, 2]]
-
                 act_scaled = scale_sim_action(act_trimmed)
-
-                data = {
-                    'obs': obs_scaled,
-                    'action': act_scaled
-                }
-                normalizer = LinearNormalizer()
-                normalizer.fit(data=data, last_n_dims=1, mode=mode, **kwargs)
-
-                # Update mins and maxes
-                for key in ['obs', 'action']:
-                    _max = normalizer[key].params_dict.input_stats.max
-                    _min = normalizer[key].params_dict.input_stats.min
-
-                    if key not in input_stats:
-                        input_stats[key] = {'max': _max, 'min': _min}
-                    else:
-                        input_stats[key]['max'] = torch.maximum(input_stats[key]['max'], _max)
-                        input_stats[key]['min'] = torch.minimum(input_stats[key]['min'], _min)
-
-        # Create normalizer
-        # Normalizer is a PyTorch parameter dict containing normalizers for all the keys
-        assert len(input_stats) > 0, "No simulation datasets found for computing normalizer"
+            else:
+                # Real data: filter obs and trim actions (no scaling)
+                obs_filt = filter_real_obs(raw_obs)
+                obs_scaled = obs_filt
+                
+                act_trimmed = raw_act[:, [0, 2]]
+                act_scaled = act_trimmed
+            
+            data = {
+                'obs': obs_scaled,
+                'action': act_scaled
+            }
+            normalizer = LinearNormalizer()
+            normalizer.fit(data=data, last_n_dims=1, mode=mode, **kwargs)
+            
+            # Update mins and maxes across all datasets
+            for key in ['obs', 'action']:
+                _max = normalizer[key].params_dict.input_stats.max
+                _min = normalizer[key].params_dict.input_stats.min
+                
+                if key not in input_stats:
+                    input_stats[key] = {'max': _max, 'min': _min}
+                else:
+                    input_stats[key]['max'] = torch.maximum(input_stats[key]['max'], _max)
+                    input_stats[key]['min'] = torch.minimum(input_stats[key]['min'], _min)
+        
+        # Create final normalizer from aggregated stats
+        assert len(input_stats) > 0, "No datasets found for computing normalizer"
         normalizer = LinearNormalizer()
         normalizer.fit_from_input_stats(input_stats_dict=input_stats)
         return normalizer
+        
 
     def get_sample_probabilities(self) -> np.ndarray:
         """Get normalized sampling probabilities for each dataset."""
@@ -343,8 +335,7 @@ class DressingRealDataset(BaseLowdimDataset):
         act = sample[self.action_key]  # shape [T, D_a]
 
         obs_scaled = obs_trimmed = obs
-        act_trimmed = act[:, [0, 2]]
-        act_scaled = act_trimmed
+        act_scaled = act
         
         local_dataset_name = self.dataset_names[sampler_idx]
 
@@ -352,13 +343,13 @@ class DressingRealDataset(BaseLowdimDataset):
             # Simulation data: apply full transformation pipeline
             obs_trimmed = filter_sim_obs(obs)
             obs_scaled = scale_sim_obs(obs_trimmed)
-            act_scaled = scale_sim_action(act_trimmed)
+            act_scaled = scale_sim_action(act)
         else:
             obs_trimmed = filter_real_obs(obs)
             obs_scaled = obs_trimmed
             
-        assert obs_scaled.shape[1] == 16, (
-            f"Expected obs dim 36 from {local_dataset_name}, got {obs_scaled.shape[1]}"
+        assert obs_scaled.shape[1] == 29, (
+            f"Expected obs dim 29 from {local_dataset_name}, got {obs_scaled.shape[1]}"
         )
 
         data = {

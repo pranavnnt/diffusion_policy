@@ -140,11 +140,15 @@ class TrainDiffusionUnetLowdimWorkspace(BaseWorkspace):
         )
 
         # device transfer
+        # print(f"Using device: {cfg.training.device}")
         device = torch.device(cfg.training.device)
+        print(f"Device: {device}")
         self.model.to(device)
+        print(f"Model moved to device: {self.model.device}")
         if self.ema_model is not None:
             self.ema_model.to(device)
         optimizer_to(self.optimizer, device)
+        print(f"Model moved to device: {self.model.device}")
 
         # save batch for sampling
         train_sampling_batch = None

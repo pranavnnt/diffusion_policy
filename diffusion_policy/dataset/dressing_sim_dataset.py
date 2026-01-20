@@ -118,7 +118,7 @@ class DressingSimDataset(BaseLowdimDataset):
 
         # Validate input dimensions
         assert obs.ndim == 2, f"Expected obs to be 2D, got {obs.ndim}D"
-        assert obs.shape[1] == 37, f"Expected obs to have 37 dimensions, got {obs.shape[1]}"
+        assert obs.shape[1] == 25, f"Expected obs to have 37 dimensions, got {obs.shape[1]}"
 
         # Filter observations to extract relevant features
         obs_filtered = filter_sim_obs(obs)
