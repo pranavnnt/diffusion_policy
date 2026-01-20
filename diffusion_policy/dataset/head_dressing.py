@@ -123,6 +123,7 @@ class HeadDressingDataset(BaseLowdimDataset):
 
             seq_len = self.horizon
 
+
             # Create sampler
             sampler = SequenceSampler(
                 replay_buffer=replay_buffer,
@@ -220,9 +221,11 @@ class HeadDressingDataset(BaseLowdimDataset):
             
             assert raw_obs.shape[-1] == 29
             
+            obs_filtered = filter_head_obs(raw_obs)
+
             data = {
-                'obs': obs_scaled,
-                'action': act_scaled
+                'obs': obs_filtered,
+                'action': raw_act
             }
             normalizer = LinearNormalizer()
             normalizer.fit(data=data, last_n_dims=1, mode=mode, **kwargs)
@@ -242,11 +245,9 @@ class HeadDressingDataset(BaseLowdimDataset):
         assert len(input_stats) > 0, "No datasets found for computing normalizer"
         normalizer = LinearNormalizer()
         normalizer.fit_from_input_stats(input_stats_dict=input_stats)
-
         # Fix small variance dimensions
         fix_small_variance_normalizer(normalizer, key='obs')
         fix_small_variance_normalizer(normalizer, key='action')
-
         return normalizer
         
 
@@ -299,7 +300,6 @@ class HeadDressingDataset(BaseLowdimDataset):
         # Rename to the standard keys the policy expects
         obs = sample[self.obs_key]  # shape [T, D_o]
         act = sample[self.action_key]  # shape [T, D_a]
-
         local_dataset_name = self.dataset_names[sampler_idx]
 
         obs_filtered = filter_head_obs(obs)
