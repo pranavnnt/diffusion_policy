@@ -1,6 +1,6 @@
 name: dressing_real
 
-obs_dim: 29
+obs_dim: 23
 action_dim: 6
 keypoint_dim: 0
 obs_eef_target: False

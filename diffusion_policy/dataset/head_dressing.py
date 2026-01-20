@@ -221,8 +221,10 @@ class HeadDressingDataset(BaseLowdimDataset):
             
             assert raw_obs.shape[-1] == 29
             
+            obs_filtered = filter_head_obs(raw_obs)
+
             data = {
-                'obs': raw_obs,
+                'obs': obs_filtered,
                 'action': raw_act
             }
             normalizer = LinearNormalizer()

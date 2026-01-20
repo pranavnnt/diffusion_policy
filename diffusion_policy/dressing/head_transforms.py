@@ -80,13 +80,13 @@ def _generate_noise(timesteps: int, noise_std) -> np.ndarray:
 
     arm1_rel_pos_noise = np.random.normal(0, noise_std['rel_pos'], size=(timesteps, 3))
     arm1_vel_noise = np.random.normal(0, noise_std['vel'], size=(timesteps, 3))
-    arm1_force_noise = np.random.normal(0, noise_std['force_vec'], size=(timesteps, 3))
+    arm1_force_noise = np.random.normal(0, noise_std['force'], size=(timesteps, 3))
     arm2_rel_pos_noise = np.random.normal(0, noise_std['rel_pos'], size=(timesteps, 3))
     arm2_vel_noise = np.random.normal(0, noise_std['vel'], size=(timesteps, 3))
-    arm2_force_noise = np.random.normal(0, noise_std['force_vec'], size=(timesteps, 3))
-    coverage_noise = np.random.normal(0, noise_std['cloth_rel_pos_z'], size=(timesteps, 1))
-    hull_centroid_noise = np.random.normal(0, noise_std['cloth_spread'], size=(timesteps, 3))
-    hull_area_noise = np.random.normal(0, noise_std['visible_hand_ratio'], size=(timesteps, 1))
+    arm2_force_noise = np.random.normal(0, noise_std['force'], size=(timesteps, 3))
+    coverage_noise = np.random.normal(0, noise_std['coverage'], size=(timesteps, 1))
+    hull_centroid_noise = np.random.normal(0, noise_std['hull_centroid'], size=(timesteps, 3))
+    hull_area_noise = np.random.normal(0, noise_std['hull_area'], size=(timesteps, 1))
 
     # Shared noise across all timesteps (one sample per episode)
 
