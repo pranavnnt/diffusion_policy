@@ -371,10 +371,11 @@ class HeadDressingDataset(BaseLowdimDataset):
             return self.replay_buffers[index].n_episodes
 
     def __len__(self) -> int:
-        """Total number of samples across all datasets."""
+        """Total number of samples across datasets with non-zero sampling probability."""
         length = 0
-        for sampler in self.samplers:
-            length += len(sampler)
+        for i, sampler in enumerate(self.samplers):
+            if self.sample_probabilities[i] > 0:
+                length += len(sampler)
         return length
 
     def _sample_to_data(
