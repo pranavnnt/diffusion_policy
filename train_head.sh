@@ -3,4 +3,4 @@ python train.py \
   name="new_head_training" \
   dataloader.num_workers=8 \
   optimizer.lr=1e-5 \
-  training.num_epochs=300 \
+  training.num_epochs=50 \
