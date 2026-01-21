@@ -1,8 +1,8 @@
 defaults:
   - _self_
-  - task: dressing_real
+  - task: head
 
-name: dressing_real
+name: head_dressing
 _target_: diffusion_policy.workspace.train_diffusion_unet_lowdim_workspace.TrainDiffusionUnetLowdimWorkspace
 
 obs_dim: ${task.obs_dim}
