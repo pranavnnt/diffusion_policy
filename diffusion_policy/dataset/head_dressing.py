@@ -17,6 +17,97 @@ from diffusion_policy.dressing.head_transforms import (
 
 from diffusion_policy.dataset.util import fix_small_variance_normalizer
 
+ACTION_THRESHOLD = 1e-3
+
+def filter_small_actions(obs: np.ndarray, actions: np.ndarray, threshold: float = ACTION_THRESHOLD) -> tuple:
+    """Filter out timesteps where all action values are below threshold.
+    
+    Keeps only timesteps where at least one action component has absolute value >= threshold.
+    Returns both filtered obs and actions to keep them aligned.
+    
+    Args:
+        obs: Observation array of shape [T, D_o]
+        actions: Action array of shape [T, D_a]
+        threshold: Minimum absolute value for actions (default 1e-2)
+        
+    Returns:
+        Tuple of (filtered_obs, filtered_actions) with small action timesteps removed
+    """
+    # Create mask: keep timesteps where max absolute action value >= threshold
+    mask = np.max(np.abs(actions), axis=-1) >= threshold
+    
+    filtered_obs = obs[mask]
+    filtered_actions = actions[mask]
+    
+    return filtered_obs, filtered_actions
+
+
+def load_and_filter_replay_buffer(
+    zarr_path: str, 
+    obs_key: str, 
+    action_key: str,
+    threshold: float = ACTION_THRESHOLD
+) -> ReplayBuffer:
+    """Load zarr data and create a new ReplayBuffer with small actions filtered out.
+    
+    Args:
+        zarr_path: Path to the zarr dataset
+        obs_key: Key for observations in the zarr data
+        action_key: Key for actions in the zarr data
+        threshold: Minimum absolute value for actions (default 1e-2)
+        
+    Returns:
+        ReplayBuffer with filtered data
+    """
+    # Load original data
+    original_buffer = ReplayBuffer.copy_from_path(
+        zarr_path=zarr_path,
+        store=zarr.MemoryStore(),
+        keys=[obs_key, action_key]
+    )
+    
+    # Get episode boundaries
+    episode_ends = original_buffer.episode_ends[:]
+    all_obs = original_buffer[obs_key][:]
+    all_actions = original_buffer[action_key][:]
+    
+    print(f"Action num before filter: {len(all_actions)}")
+    
+    # Create new replay buffer
+    filtered_buffer = ReplayBuffer.create_empty_numpy()
+    
+    # Process each episode
+    total_before = 0
+    total_after = 0
+    start_idx = 0
+    for end_idx in episode_ends:
+        # Extract episode data
+        episode_obs = all_obs[start_idx:end_idx]
+        episode_actions = all_actions[start_idx:end_idx]
+        
+        total_before += len(episode_obs)
+        
+        # Filter small actions
+        filtered_obs, filtered_actions = filter_small_actions(
+            episode_obs, episode_actions, threshold
+        )
+        
+        # Only add episode if it has data after filtering
+        if len(filtered_obs) > 0:
+            filtered_buffer.add_episode(
+                data={
+                    obs_key: filtered_obs,
+                    action_key: filtered_actions
+                }
+            )
+            total_after += len(filtered_obs)
+        
+        start_idx = end_idx
+    
+    print(f"Action num after filter: {total_after}")
+    
+    return filtered_buffer
+
 
 class HeadDressingDataset(BaseLowdimDataset):
     """Dataset for head dressing task """
@@ -93,11 +184,12 @@ class HeadDressingDataset(BaseLowdimDataset):
             max_train_episodes = zarr_config.get('max_train_episodes', None)
             sampling_weight = zarr_config.get('sampling_weight', None)
 
-            # Load replay buffer
-            replay_buffer = ReplayBuffer.copy_from_path(
+            # Load replay buffer with small actions filtered out
+            replay_buffer = load_and_filter_replay_buffer(
                 zarr_path=zarr_path,
-                store=zarr.MemoryStore(),
-                keys=keys
+                obs_key=self.obs_key,
+                action_key=self.action_key,
+                threshold=ACTION_THRESHOLD
             )
             self.replay_buffers.append(replay_buffer)
             n_episodes = replay_buffer.n_episodes
@@ -122,6 +214,7 @@ class HeadDressingDataset(BaseLowdimDataset):
             self.val_masks.append(val_mask)
 
             seq_len = self.horizon
+
 
             # Create sampler
             sampler = SequenceSampler(
@@ -153,11 +246,12 @@ class HeadDressingDataset(BaseLowdimDataset):
             )
             index = 0
 
-        # Safely clone the replay buffer
-        replay_buffer = ReplayBuffer.copy_from_path(
+        # Safely clone the replay buffer with small actions filtered out
+        replay_buffer = load_and_filter_replay_buffer(
             zarr_path=self.zarr_paths[index],
-            store=zarr.MemoryStore(),
-            keys=[self.obs_key, self.action_key]
+            obs_key=self.obs_key,
+            action_key=self.action_key,
+            threshold=ACTION_THRESHOLD
         )
 
         # Create a new instance without calling __init__
@@ -220,9 +314,12 @@ class HeadDressingDataset(BaseLowdimDataset):
             
             assert raw_obs.shape[-1] == 29
             
+            # Actions are already filtered at load time
+            obs_filtered = filter_head_obs(raw_obs)
+
             data = {
-                'obs': obs_scaled,
-                'action': act_scaled
+                'obs': obs_filtered,
+                'action': raw_act
             }
             normalizer = LinearNormalizer()
             normalizer.fit(data=data, last_n_dims=1, mode=mode, **kwargs)
@@ -242,11 +339,9 @@ class HeadDressingDataset(BaseLowdimDataset):
         assert len(input_stats) > 0, "No datasets found for computing normalizer"
         normalizer = LinearNormalizer()
         normalizer.fit_from_input_stats(input_stats_dict=input_stats)
-
         # Fix small variance dimensions
         fix_small_variance_normalizer(normalizer, key='obs')
         fix_small_variance_normalizer(normalizer, key='action')
-
         return normalizer
         
 
@@ -299,9 +394,9 @@ class HeadDressingDataset(BaseLowdimDataset):
         # Rename to the standard keys the policy expects
         obs = sample[self.obs_key]  # shape [T, D_o]
         act = sample[self.action_key]  # shape [T, D_a]
-
         local_dataset_name = self.dataset_names[sampler_idx]
 
+        # Actions are already filtered at load time
         obs_filtered = filter_head_obs(obs)
             
         assert obs_filtered.shape[1] == 23, (
@@ -310,7 +405,7 @@ class HeadDressingDataset(BaseLowdimDataset):
 
         data = {
             'obs': obs_filtered,      # shape [T, D_o]
-            'action': act,   # shape [T, D_a]
+            'action': act,            # shape [T, D_a] (already filtered at load time)
         }
 
         if self.use_domain_encoding:
