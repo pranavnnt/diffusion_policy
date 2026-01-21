@@ -130,6 +130,9 @@ checkpoint:
   save_last_ckpt: True
   save_last_snapshot: False
 
+eval:
+  ckpt: null  # Set via command line: +eval.ckpt=/path/to/checkpoint.ckpt
+
 multi_run:
   run_dir: data/outputs/${now:%Y.%m.%d}/${now:%H.%M.%S}_${name}_${task_name}
   wandb_name_base: ${now:%Y.%m.%d-%H.%M.%S}_${name}_${task_name}
