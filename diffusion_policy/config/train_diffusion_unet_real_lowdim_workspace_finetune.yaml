@@ -1,6 +1,6 @@
 defaults:
   - _self_
-  - task: dressing_real_finetune
+  - task: right_arm
 
 name: dressing_real_finetuned
 _target_: diffusion_policy.workspace.train_diffusion_unet_real_lowdim_workspace.TrainDiffusionUnetRealLowdimWorkspace
@@ -117,7 +117,7 @@ training:
   resume: False  # False for initial finetuning
 
 eval:
-  ckpt: /home/dressing/workspace/bimanual_ws/src/bimanual_dressing/src/dressing_policies/weights/2026.01.17_12.24.45_clean_data_dressing_real_first_arm_finetune/checkpoints/latest.ckpt
+  ckpt: /home/dressing/workspace/bimanual_ws/src/bimanual_dressing/src/dressing_policies/weights/right/2026.01.20_17.24.18_no_pretrain_with_upsample_low_noise_dressing_real_first_arm_finetune/checkpoints/latest.ckpt
 
 logging:
   project: dressing_real
