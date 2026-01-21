@@ -161,13 +161,17 @@ def filter_real_obs(obs: np.ndarray) -> np.ndarray:
 
     obs_front_only = obs[:, :19]        # using front data only
 
+    # State vector layout from thread_arm_env.py:
+    # 0-2: pos (x,y,z), 3-5: vel (x,y,z), 6-10: cloth_rel_pos_x (5),
+    # 11-12: cloth_rel_pos_z (2), 13: cloth_spread, 14: hand_spread,
+    # 15-17: force (3), 18: visible_hand_ratio
     pos = obs_front_only[:, :3]
     vel = obs_front_only[:, 3:6]
-    force = obs_front_only[:, 6:9]
-    cloth_rel_pos_x = obs_front_only[:, 9:14]
-    cloth_rel_pos_z = obs_front_only[:, 14:16]
-    cloth_spread = obs_front_only[:, 16:17]
-    hand_spread = obs_front_only[:, 17:18]
+    cloth_rel_pos_x = obs_front_only[:, 6:11]      # unused but extracted for clarity
+    cloth_rel_pos_z = obs_front_only[:, 11:13]
+    cloth_spread = obs_front_only[:, 13:14]
+    hand_spread = obs_front_only[:, 14:15]         # unused
+    force = obs_front_only[:, 15:18]
     visible_hand_ratio = obs_front_only[:, 18:19]
 
     pos_xz = pos[:, [0, 2]]
