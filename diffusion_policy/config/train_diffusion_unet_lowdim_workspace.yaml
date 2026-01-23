@@ -113,7 +113,7 @@ training:
   tqdm_interval_sec: 1.0
 
 eval:
-  ckpt: /home/pranavnnt/workspace/dressing_sim_ws/dressing_policies/weights/2025.11.13_02.12.24_dagger_round2_first_arm_env_lowdim/checkpoints/epoch=0020-val_loss=0.021.ckpt
+  ckpt: /home/pranavnnt/workspace/dressing_sim_ws/dressing_policies/weights/2025.11.20_01.04.54_new_aligned_dataset_x1_first_arm_env_lowdim/checkpoints/latest.ckpt
 
 logging:
   project: first_arm_dressing

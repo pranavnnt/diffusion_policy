@@ -22,7 +22,8 @@ class FirstArmLowdimDataset(BaseLowdimDataset):
             seed=42,
             val_ratio=0.0,
             upsampled=True,
-            upsample_multiplier=5, 
+            upsample_multiplier=5,
+            already_processed=False, 
             eval=False,
             ):
         super().__init__()
@@ -56,6 +57,7 @@ class FirstArmLowdimDataset(BaseLowdimDataset):
         self.upsampled = upsampled
         self.upsample_multiplier = upsample_multiplier
         self.eval = eval
+        self.already_processed = already_processed 
 
     def get_validation_dataset(self):
         val_set = copy.deepcopy(self)
@@ -137,9 +139,12 @@ class FirstArmLowdimDataset(BaseLowdimDataset):
         act = sample[self.action_key]     # shape [T, D_a]
         
         assert obs.ndim == 2, f"Expected obs to be 2D, got {obs.ndim}D"
-        assert obs.shape[1] == 37, f"Expected obs to have 37 dimensions, got {obs.shape[1]}"
-        
-        obs_trimmed = np.array(self._filter_obs(obs))
+
+        if not self.already_processed:  
+            obs_trimmed = np.array(self._filter_obs(obs))
+            assert obs.shape[1] == 37, f"Expected obs to have 37 dimensions, got {obs.shape[1]}"
+        else:
+            obs_trimmed = obs
         # Remove forearm and backarm position from state
         assert obs_trimmed.shape[1] == 16, f"Expected trimmed obs to have 6 dimensions, got {obs_trimmed.shape[1]}"
         
@@ -210,7 +215,8 @@ class FirstArmLowdimDataset(BaseLowdimDataset):
         obs = sample[self.obs_key]
     
         # --- Filter obs (state) ---
-        obs_filtered = self._filter_obs(np.array(obs)[None, :])[0]
+        if not self.already_processed:
+            obs_filtered = self._filter_obs(np.array(obs)[None, :])[0]
     
         return {
             "state": torch.from_numpy(obs_filtered).float(),
