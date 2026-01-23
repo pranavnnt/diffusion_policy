@@ -1,8 +1,8 @@
 defaults:
   - _self_
-  - task: dressing_sim
+  - task: head
 
-name: dressing_sim
+name: head_dressing
 _target_: diffusion_policy.workspace.train_diffusion_unet_lowdim_workspace.TrainDiffusionUnetLowdimWorkspace
 
 obs_dim: ${task.obs_dim}
@@ -11,8 +11,8 @@ keypoint_dim: ${task.keypoint_dim}
 task_name: ${task.name}
 exp_name: "default"
 
-horizon: 32
-n_obs_steps: 16
+horizon: 16
+n_obs_steps: 8
 n_action_steps: 8
 n_latency_steps: 0
 past_action_visible: False
@@ -112,11 +112,8 @@ training:
   # misc
   tqdm_interval_sec: 1.0
 
-eval:
-  ckpt: /home/pranavnnt/workspace/dressing_sim_ws/dressing_policies/weights/2025.11.20_01.04.54_new_aligned_dataset_x1_first_arm_env_lowdim/checkpoints/latest.ckpt
-
 logging:
-  project: dressing_sim
+  project: dressing_head
   resume: True
   mode: online
   name: ${now:%Y.%m.%d-%H.%M.%S}_${name}_${task_name}
