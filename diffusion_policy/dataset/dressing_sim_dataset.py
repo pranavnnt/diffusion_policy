@@ -119,12 +119,12 @@ class DressingSimDataset(BaseLowdimDataset):
         Returns:
             Dictionary with processed 'obs' and 'action' arrays, and optionally 'domain_encoding'
         """
-        obs = sample[self.obs_key]  # shape [T, 37]
+        obs = sample[self.obs_key]  # shape [T, 38]
         act = sample[self.action_key]  # shape [T, D_a]
 
         # Validate input dimensions
         assert obs.ndim == 2, f"Expected obs to be 2D, got {obs.ndim}D"
-        assert obs.shape[1] == 37, f"Expected obs to have 37 dimensions, got {obs.shape[1]}"
+        assert obs.shape[1] == 38, f"Expected obs to have 38 dimensions, got {obs.shape[1]}"
 
         # Filter observations to extract relevant features
         obs_filtered = filter_sim_obs(obs)
