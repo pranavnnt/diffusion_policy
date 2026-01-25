@@ -56,7 +56,8 @@ def _extract_observation_components(obs: np.ndarray) -> Dict[str, np.ndarray]:
         'bigger_hole_area': obs[:, 11:12],
         'arm_pos': obs[:, 12:24],
         'hand_pos': obs[:, 24:31],
-        'cloth_features': obs[:, 31:]
+        'cloth_features': obs[:, 31:37],
+        'visible_hand_ratio': obs[:, 37:38]
     }
 
 
@@ -148,7 +149,7 @@ def filter_sim_obs(obs: np.ndarray) -> np.ndarray:
         force_vec,
         cloth_hand_features['cloth_rel_pos_z'],
         cloth_hand_features['cloth_spread'],
-        [0.5] * np.ones((obs.shape[0], 1)),  # visible_hand_ratio placeholder
+        components['visible_hand_ratio'],  
     ], axis=1)
 
     assert obs_filtered.shape[1] == 11
