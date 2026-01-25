@@ -113,7 +113,8 @@ training:
   tqdm_interval_sec: 1.0
 
 eval:
-  ckpt: /home/pranavnnt/workspace/dressing_sim_ws/dressing_policies/weights/2025.11.20_01.04.54_new_aligned_dataset_x1_first_arm_env_lowdim/checkpoints/latest.ckpt
+  ckpt: /home/pranavnnt/workspace/dressing_sim_ws/dressing_policies/weights/2026.01.24_18.04.24_sim_with_hand_ratio_upsample_x4_dressing_sim/checkpoints/latest.ckpt
+  episodes_per_pose: 10
 
 logging:
   project: dressing_sim
