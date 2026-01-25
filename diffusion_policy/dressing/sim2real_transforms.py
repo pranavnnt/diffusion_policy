@@ -157,27 +157,25 @@ def filter_sim_obs(obs: np.ndarray) -> np.ndarray:
 
 def filter_real_obs(obs: np.ndarray) -> np.ndarray:
 
-    assert obs.shape[1] == 38, f"Expected real obs to have 38 dimensions, got {obs.shape[1]}"
-
-    obs_front_only = obs[:, :19]        # using front data only
+    assert obs.shape[1] == 19, f"Expected real obs to have 19 dimensions, got {obs.shape[1]}"
 
     # State vector layout from thread_arm_env.py:
     # 0-2: pos (x,y,z), 3-5: vel (x,y,z), 6-10: cloth_rel_pos_x (5),
     # 11-12: cloth_rel_pos_z (2), 13: cloth_spread, 14: hand_spread,
     # 15-17: force (3), 18: visible_hand_ratio
-    pos = obs_front_only[:, :3]
-    vel = obs_front_only[:, 3:6]
-    cloth_rel_pos_x = obs_front_only[:, 6:11]      # unused but extracted for clarity
-    cloth_rel_pos_z = obs_front_only[:, 11:13]
-    cloth_spread = obs_front_only[:, 13:14]
-    hand_spread = obs_front_only[:, 14:15]         # unused
-    force = obs_front_only[:, 15:18]
-    visible_hand_ratio = obs_front_only[:, 18:19]
+    pos = obs[:, :3]
+    vel = obs[:, 3:6]
+    cloth_rel_pos_x = obs[:, 6:11]      # unused but extracted for clarity
+    cloth_rel_pos_z = obs[:, 11:13]
+    cloth_spread = obs[:, 13:14]
+    hand_spread = obs[:, 14:15]         # unused
+    force = obs[:, 15:18]
+    visible_hand_ratio = obs[:, 18:19]
 
     pos_xz = pos[:, [0, 2]]
     vel_xz = vel[:, [0, 2]]
 
-    obs_filtered =  np.concatenate([
+    obs_filtered = np.concatenate([
         pos_xz,
         vel_xz,
         force,
@@ -277,31 +275,23 @@ def _generate_noise(timesteps: int, noise_std) -> np.ndarray:
 
 def add_noise(obs: Dict[str, np.ndarray], dataset_name: str) -> Dict[str, np.ndarray]:
     """Add scaled noise to observations (works for both scaled sim and real observations).
-    
+
     Args:
-        obs: Dictionary containing 'obs' key with array of shape (T, 38)
-        
+        obs: Dictionary containing 'obs' key with array of shape (T, 19) or (T, 11)
+
     Returns:
         Modified observation dictionary with noise added
     """
 
     obs_vec = obs["obs"]
     timesteps = obs_vec.shape[0]
-    
+
     if dataset_name.startswith("sim"):
         noise = _generate_noise(timesteps, SIM_NOISE_STD)
         scaled_noise = scale_noise(noise)
     else:
+        noise = _generate_noise(timesteps, REAL_NOISE_STD)
+        scaled_noise = noise
 
-        if obs_vec.shape[1] == 38:
-            noise1 = _generate_noise(timesteps, SIM_NOISE_STD)
-            scaled_noise1 = scale_noise(noise1)
-            noise2 = _generate_noise(timesteps, REAL_NOISE_STD)
-            scaled_noise2 = noise2
-            scaled_noise = np.concatenate([scaled_noise1, scaled_noise2], axis=1)
-        else:
-            noise = _generate_noise(timesteps, REAL_NOISE_STD)
-            scaled_noise = noise
-    
     obs["obs"] = obs_vec + scaled_noise
     return obs
