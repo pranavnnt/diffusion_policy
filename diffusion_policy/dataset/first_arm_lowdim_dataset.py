@@ -93,7 +93,8 @@ class FirstArmLowdimDataset(BaseLowdimDataset):
         bigger_hole_area = obs[:, 11:12]       # keep 2-D shape
         arm_pos = obs[:, 12:24]
         hand_pos = obs[:, 24:31]
-        cloth_features = obs[:, 31:]
+        cloth_features = obs[:, 31:37]
+        visible_hand_ratio = obs[:, 37:38]  
 
         # distance between fingertip and EEF in X direction
         rel_pos_x = np.expand_dims(pos[:, 0] - arm_pos[:, 0], axis=1)
@@ -125,9 +126,12 @@ class FirstArmLowdimDataset(BaseLowdimDataset):
         force_vec = force_mag * force[:, 1:4]     
 
         obs_filtered = np.concatenate(
-            [rel_pos_x, rel_pos_z, vel_x, vel_z, cloth_rel_pos_x, cloth_rel_pos_z, cloth_spread, hand_spread, force_vec],
+            [rel_pos_x, rel_pos_z, vel_x, vel_z, cloth_rel_pos_x, cloth_rel_pos_z, cloth_spread, hand_spread, force_vec, visible_hand_ratio],
             axis=1
-        )   # [T, 1+1+1+1+2+5+2+3 = 16]
+        )   # [T, 1+1+1+1+2+5+2+3+1 = 17]
+
+        assert obs_filtered.shape[1] == 17, f"Expected filtered obs to have 17 dimensions, got {obs_filtered.shape[1]}"
+
         return obs_filtered
 
     def _sample_to_data(self, sample):
@@ -137,11 +141,11 @@ class FirstArmLowdimDataset(BaseLowdimDataset):
         act = sample[self.action_key]     # shape [T, D_a]
         
         assert obs.ndim == 2, f"Expected obs to be 2D, got {obs.ndim}D"
-        assert obs.shape[1] == 37, f"Expected obs to have 37 dimensions, got {obs.shape[1]}"
+        assert obs.shape[1] == 38, f"Expected obs to have 38 dimensions, got {obs.shape[1]}"
         
         obs_trimmed = np.array(self._filter_obs(obs))
         # Remove forearm and backarm position from state
-        assert obs_trimmed.shape[1] == 16, f"Expected trimmed obs to have 6 dimensions, got {obs_trimmed.shape[1]}"
+        assert obs_trimmed.shape[1] == 17, f"Expected trimmed obs to have 6 dimensions, got {obs_trimmed.shape[1]}"
         
         act_trimmed = act[:, [0, 2]]
 
@@ -152,7 +156,7 @@ class FirstArmLowdimDataset(BaseLowdimDataset):
 
     def add_noise(self, obs):
     
-        obs_vec = obs["obs"]        # shape (T, 16)
+        obs_vec = obs["obs"]        # shape (T, 17)
         T = obs_vec.shape[0]
 
         # --- Noise scales ---
@@ -163,6 +167,7 @@ class FirstArmLowdimDataset(BaseLowdimDataset):
         cloth_spread_std         = np.array([2], dtype=np.float32)
         hand_spread_std          = np.array([1], dtype=np.float32)
         force_vec_std            = np.array([2, 2, 2], dtype=np.float32)
+        visible_hand_ratio_std   = np.array([0.1], dtype=np.float32)
 
         # iid per timestep
         rel_pos_noise         = np.random.normal(0, rel_pos_std,        size=(T, 2))
@@ -170,6 +175,7 @@ class FirstArmLowdimDataset(BaseLowdimDataset):
         cloth_rel_pos_z_noise = np.random.normal(0, cloth_rel_pos_z_std,size=(T, 2))
         force_vec_noise       = np.random.normal(0, force_vec_std,      size=(T, 3))
         cloth_spread_noise    = np.random.normal(0, cloth_spread_std,     size=(T, 1))
+        visible_hand_ratio_noise = np.random.normal(0, visible_hand_ratio_std, size=(T, 1))
 
         # one noise sample reused for all timesteps IN THIS SAMPLE (T)
         cloth_rel_pos_x_noise = np.random.normal(0, cloth_rel_pos_x_std)   # (5,)
@@ -184,7 +190,8 @@ class FirstArmLowdimDataset(BaseLowdimDataset):
             cloth_rel_pos_z_noise,
             cloth_spread_noise,
             hand_spread_noise,
-            force_vec_noise
+            force_vec_noise,
+            visible_hand_ratio_noise
         ], axis=1)
 
         obs["obs"] = obs_vec + noise
