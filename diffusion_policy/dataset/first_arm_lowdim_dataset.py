@@ -1,4 +1,3 @@
-# diffusion_policy/env/first_arm_lowdim_task.py
 from typing import Dict
 import torch
 import numpy as np
@@ -6,10 +5,19 @@ import copy
 from diffusion_policy.common.pytorch_util import dict_apply
 from diffusion_policy.common.replay_buffer import ReplayBuffer
 from diffusion_policy.common.sampler import SequenceSampler, get_val_mask
-from diffusion_policy.model.common.normalizer import LinearNormalizer, SingleFieldLinearNormalizer
+from diffusion_policy.model.common.normalizer import LinearNormalizer
 from diffusion_policy.dataset.base_dataset import BaseLowdimDataset
 
-class FirstArmLowdimDataset(BaseLowdimDataset):
+from diffusion_policy.dressing.sim2real_transforms import (
+    filter_sim_obs,
+    scale_sim_obs,
+    scale_sim_action,
+    add_noise
+)
+from diffusion_policy.dataset.util import fix_small_variance_normalizer
+
+
+class DressingSimDataset(BaseLowdimDataset):
     def __init__(self, 
             zarr_path, 
             horizon=1,
@@ -19,11 +27,13 @@ class FirstArmLowdimDataset(BaseLowdimDataset):
             obs_eef_target=False,
             action_key='action',
             use_manual_normalizer=False,
+            use_domain_encoding=True,
+            domain_encoding_dim=2,
             seed=42,
             val_ratio=0.0,
             upsampled=True,
             upsample_multiplier=5, 
-            eval=False,
+            duplicate_for_pretraining=False
             ):
         super().__init__()
         self.replay_buffer = ReplayBuffer.copy_from_path(
@@ -47,17 +57,22 @@ class FirstArmLowdimDataset(BaseLowdimDataset):
         self.obs_key = obs_key
         self.action_key = action_key
         self.use_manual_normalizer = use_manual_normalizer
+        self.use_domain_encoding = use_domain_encoding
+        self.domain_encoding_dim = domain_encoding_dim
         self.train_mask = train_mask
         self.obs_eef_target = obs_eef_target
         self.horizon = horizon
         self.pad_before = pad_before
         self.pad_after = pad_after
 
+        print("Domain encoding set to: ", self.use_domain_encoding)
+
         self.upsampled = upsampled
         self.upsample_multiplier = upsample_multiplier
-        self.eval = eval
+        self.duplicate_for_pretraining = duplicate_for_pretraining
 
     def get_validation_dataset(self):
+        """Create a validation dataset using the validation mask."""
         val_set = copy.deepcopy(self)
         seq_len = self.horizon * self.upsample_multiplier if self.upsampled else self.horizon
 
@@ -72,125 +87,84 @@ class FirstArmLowdimDataset(BaseLowdimDataset):
         return val_set
 
     def get_normalizer(self, mode='gaussian', **kwargs):
-        # Build a multi-field normalizer over exactly the keys we will normalize
+        
         data = self._sample_to_data(self.replay_buffer)
-        # data must be a dict like {'obs': np.ndarray, 'action': np.ndarray}
+    
+        # Apply duplication if enabled
+        if self.duplicate_for_pretraining:
+            data['obs'] = np.concatenate([data['obs'], data['obs']], axis=-1)
+
         normalizer = LinearNormalizer()
         normalizer.fit(data=data, last_n_dims=1, mode=mode, **kwargs)
+
+        # Fix small variance dimensions
+        fix_small_variance_normalizer(normalizer, key='obs')
+        fix_small_variance_normalizer(normalizer, key='action')
+
         return normalizer
 
     def get_all_actions(self) -> torch.Tensor:
+        """Get all actions from the replay buffer."""
         return torch.from_numpy(self.replay_buffer[self.action_key])
 
     def __len__(self) -> int:
         return len(self.sampler)
-    
-    def _filter_obs(self, obs):
-        pos = obs[:, :3]
-        vel = obs[:, 3:6]
-        in_arm = obs[:, 6]
-        force = obs[:, 7:11]
-        bigger_hole_area = obs[:, 11:12]       # keep 2-D shape
-        arm_pos = obs[:, 12:24]
-        hand_pos = obs[:, 24:31]
-        cloth_features = obs[:, 31:]
 
-        # distance between fingertip and EEF in X direction
-        rel_pos_x = np.expand_dims(pos[:, 0] - arm_pos[:, 0], axis=1)
-        rel_pos_z = np.expand_dims(pos[:, 2] - arm_pos[:, 2], axis=1)
-        vel_x     = np.expand_dims(vel[:, 0], axis=1)
-        vel_z     = np.expand_dims(vel[:, 2], axis=1)
-
-        # hand_position_state = [hand_z_max, hand_z_min, thumb_x_max, index_x_max, middle_x_max, ring_x_max, pinky_x_max]
-        # cloth position state = cloth_features = [min(pos[0] for pos in relative_cloth_loop), max(pos[0] for pos in relative_cloth_loop),
-        #                                          min(pos[1] for pos in relative_cloth_loop), max(pos[1] for pos in relative_cloth_loop),
-        #                                          min(pos[2] for pos in relative_cloth_loop), max(pos[2] for pos in relative_cloth_loop)]
-
-        # remember, in sim, dressing is in negative x direction, so max x is the farthest from being dresssed. 
-        # in the real world, dressing is in positive x direction. 
+    def _sample_to_data(self, sample: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
+        """Convert raw sample to processed observation and action data.
         
-        cloth_rel_pos_z = np.stack([cloth_features[:, 4] - hand_pos[:, 1],
-                                    cloth_features[:, 5] - hand_pos[:, 0]], axis=1)
+        Args:
+            sample: Dictionary containing raw observations and actions
+            
+        Returns:
+            Dictionary with processed 'obs' and 'action' arrays, and optionally 'domain_encoding'
+        """
+        obs = sample[self.obs_key]  # shape [T, 38]
+        act = sample[self.action_key]  # shape [T, D_a]
 
-        cloth_rel_pos_x = np.stack([cloth_features[:, 1] - hand_pos[:, 2],
-                                    cloth_features[:, 1] - hand_pos[:, 3], 
-                                    cloth_features[:, 1] - hand_pos[:, 4],
-                                    cloth_features[:, 1] - hand_pos[:, 5],
-                                    cloth_features[:, 1] - hand_pos[:, 6]], axis=1)
-
-        cloth_spread = (cloth_features[:, 5] - cloth_features[:, 4]).reshape(-1, 1)
-        hand_spread = (hand_pos[:, 0] - hand_pos[:, 1]).reshape(-1, 1)
-
-        force_mag = force[:, 0:1]
-        force_vec = force_mag * force[:, 1:4]     
-
-        obs_filtered = np.concatenate(
-            [rel_pos_x, rel_pos_z, vel_x, vel_z, cloth_rel_pos_x, cloth_rel_pos_z, cloth_spread, hand_spread, force_vec],
-            axis=1
-        )   # [T, 1+1+1+1+2+5+2+3 = 16]
-        return obs_filtered
-
-    def _sample_to_data(self, sample):
-        # Rename to the standard keys the policy expects:
-
-        obs = sample[self.obs_key]        # shape [T, D_o]
-        act = sample[self.action_key]     # shape [T, D_a]
-        
+        # Validate input dimensions
         assert obs.ndim == 2, f"Expected obs to be 2D, got {obs.ndim}D"
-        assert obs.shape[1] == 37, f"Expected obs to have 37 dimensions, got {obs.shape[1]}"
-        
-        obs_trimmed = np.array(self._filter_obs(obs))
-        # Remove forearm and backarm position from state
-        assert obs_trimmed.shape[1] == 16, f"Expected trimmed obs to have 6 dimensions, got {obs_trimmed.shape[1]}"
-        
+        assert obs.shape[1] == 38, f"Expected obs to have 38 dimensions, got {obs.shape[1]}"
+
+        # Filter observations to extract relevant features
+        obs_filtered = filter_sim_obs(obs)
+        assert obs_filtered.shape[1] == 16, (
+            f"Expected filtered obs to have 16 dimensions, got {obs_filtered.shape[1]}"
+        )
+
+        # Extract x and z components from actions
         act_trimmed = act[:, [0, 2]]
 
-        return {
-            'obs':    obs_trimmed,
-            'action': act_trimmed,
+        # Apply sim2real scaling transformations
+        obs_scaled = scale_sim_obs(obs_filtered)
+        act_scaled = scale_sim_action(act_trimmed)
+
+        data = {
+            'obs': obs_scaled,
+            'action': act_scaled,
         }
 
-    def add_noise(self, obs):
-    
-        obs_vec = obs["obs"]        # shape (T, 16)
-        T = obs_vec.shape[0]
+        # Add domain encoding for sim data: [1, 0]
+        if self.use_domain_encoding:
+            domain_encoding = np.zeros(self.domain_encoding_dim, dtype=np.float32)
+            domain_encoding[0] = 1.0  # First position is 1 for sim
+            data['domain_encoding'] = domain_encoding
 
-        # --- Noise scales ---
-        rel_pos_std              = np.array([1, 1], dtype=np.float32)
-        vel_std                  = np.array([0.5, 0.5], dtype=np.float32)
-        cloth_rel_pos_z_std      = np.array([2, 2], dtype=np.float32)
-        cloth_rel_pos_x_std      = np.array([1, 1, 1, 1, 1], dtype=np.float32)
-        cloth_spread_std         = np.array([2], dtype=np.float32)
-        hand_spread_std          = np.array([1], dtype=np.float32)
-        force_vec_std            = np.array([2, 2, 2], dtype=np.float32)
-
-        # iid per timestep
-        rel_pos_noise         = np.random.normal(0, rel_pos_std,        size=(T, 2))
-        vel_noise             = np.random.normal(0, vel_std,            size=(T, 2))
-        cloth_rel_pos_z_noise = np.random.normal(0, cloth_rel_pos_z_std,size=(T, 2))
-        force_vec_noise       = np.random.normal(0, force_vec_std,      size=(T, 3))
-        cloth_spread_noise    = np.random.normal(0, cloth_spread_std,     size=(T, 1))
-
-        # one noise sample reused for all timesteps IN THIS SAMPLE (T)
-        cloth_rel_pos_x_noise = np.random.normal(0, cloth_rel_pos_x_std)   # (5,)
-        cloth_rel_pos_x_noise = np.tile(cloth_rel_pos_x_noise, (T, 1))     # (T, 5)
-        hand_spread_noise    = np.random.normal(0, hand_spread_std)          # (1,)
-        hand_spread_noise    = np.tile(hand_spread_noise, (T, 1))           # (T, 1)
-
-        noise = np.concatenate([
-            rel_pos_noise,
-            vel_noise,
-            cloth_rel_pos_x_noise,
-            cloth_rel_pos_z_noise,
-            cloth_spread_noise,
-            hand_spread_noise,
-            force_vec_noise
-        ], axis=1)
-
-        obs["obs"] = obs_vec + noise
-        return obs
+        return data
 
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
+        """Get a single training sample with optional upsampling and noise augmentation.
+        
+        Args:
+            idx: Sample index
+            
+        Returns:
+            Dictionary containing torch tensors for 'obs', 'action', and optionally 'domain_encoding'
+        """
+        # Sample sequence from replay buffer
+        raw_sample = self.sampler.sample_sequence(idx)
+
+        # Subsample if using upsampled data
         if self.upsampled:
             raw_sample = self.sampler.sample_sequence(idx)
             # Subsample every `upsample_multiplier` frame to restore original timing
@@ -199,19 +173,24 @@ class FirstArmLowdimDataset(BaseLowdimDataset):
         else:
             raw_sample = self.sampler.sample_sequence(idx)
 
+        # Process and transform data
         data = self._sample_to_data(raw_sample)
-        if not self.eval:
-            data = self.add_noise(data)
+        
+        # Add noise augmentation
+        data = add_noise(data, "sim")
+
+        # Finally, duplicate for pretraining if specified
+        if self.duplicate_for_pretraining:
+            data['obs'] = np.concatenate([data['obs'], data['obs']], axis=-1)
+            
+        if self.use_domain_encoding:
+            data['domain_encoding'] = data['domain_encoding']
+        
+        # Convert to torch tensors
         torch_data = dict_apply(data, torch.from_numpy)
+        
+        # Ensure domain_encoding is float32
+        if self.use_domain_encoding:
+            torch_data['domain_encoding'] = torch_data['domain_encoding'].float()
+
         return torch_data
-    
-    def preprocess_obs(self, sample):
-        """Process a single Unity observation dict into tensors."""
-        obs = sample[self.obs_key]
-    
-        # --- Filter obs (state) ---
-        obs_filtered = self._filter_obs(np.array(obs)[None, :])[0]
-    
-        return {
-            "state": torch.from_numpy(obs_filtered).float(),
-        }

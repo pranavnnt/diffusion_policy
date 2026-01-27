@@ -1,4 +1,4 @@
-name: first_arm_env_lowdim
+name: dressing_sim
 
 obs_dim: 16
 action_dim: 2
@@ -6,14 +6,17 @@ keypoint_dim: 0
 obs_eef_target: False
 
 dataset:
-  _target_: diffusion_policy.dataset.first_arm_lowdim_dataset.FirstArmLowdimDataset
-  zarr_path: /scratch/pnt8/dressing_demos/sim/halton_base_dagger_rd2_x1_aligned_upsampled_x4.zarr
+  _target_: diffusion_policy.dataset.first_arm_lowdim_dataset.DressingSimDataset
+  zarr_path: /scratch/pnt8/dressing_demos/sim/halton_base_dagger_rd2_x1_aligned_new_upsampled_x4.zarr
   horizon: ${horizon}
   pad_before: ${eval:'${n_obs_steps}-1'}
   pad_after: ${eval:'${n_action_steps}-1'}
   obs_eef_target: ${task.obs_eef_target}
   use_manual_normalizer: False
+  use_domain_encoding: False    # disabled by default 
+  domain_encoding_dim: 2
   seed: 42
   val_ratio: 0.02
+  duplicate_for_pretraining: False
   upsampled: True
   upsample_multiplier: 4
