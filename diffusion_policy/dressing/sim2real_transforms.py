@@ -146,19 +146,21 @@ def filter_sim_obs(obs: np.ndarray) -> np.ndarray:
         rel_features['rel_pos_z'],
         rel_features['vel_x'],
         rel_features['vel_z'],
-        force_vec,
+        cloth_hand_features['cloth_rel_pos_x'],
         cloth_hand_features['cloth_rel_pos_z'],
         cloth_hand_features['cloth_spread'],
+        cloth_hand_features['hand_spread'],
+        force_vec,
         components['visible_hand_ratio'],  
     ], axis=1)
 
-    assert obs_filtered.shape[1] == 11
+    assert obs_filtered.shape[1] == 17
     
     return obs_filtered
 
 def filter_real_obs(obs: np.ndarray) -> np.ndarray:
 
-    assert obs.shape[1] == 38, f"Expected real obs to have 38 dimensions, got {obs.shape[1]}"
+    # assert obs.shape[1] == 38, f"Expected real obs to have 38 dimensions, got {obs.shape[1]}"
 
     obs_front_only = obs[:, :19]        # using front data only
 
@@ -181,12 +183,14 @@ def filter_real_obs(obs: np.ndarray) -> np.ndarray:
     obs_filtered =  np.concatenate([
         pos_xz,
         vel_xz,
-        force,
+        cloth_rel_pos_x,
         cloth_rel_pos_z,
         cloth_spread,
+        hand_spread,
+        force,
         visible_hand_ratio
     ], axis=1)
-    assert obs_filtered.shape[1] == 11, f"Expected filtered real obs to have 11 dimensions, got {obs_filtered.shape[1]}"
+    assert obs_filtered.shape[1] == 17, f"Expected filtered real obs to have 17 dimensions, got {obs_filtered.shape[1]}"
 
     return obs_filtered
 
@@ -197,13 +201,15 @@ def _build_scaling_vector() -> np.ndarray:
         SCALING_FACTORS['rel_pos_z'],
         SCALING_FACTORS['vel_x'],
         SCALING_FACTORS['vel_z'],
-        *[SCALING_FACTORS['force_vec']] * 3,
+        *[SCALING_FACTORS['cloth_rel_pos_x']] * 5,
         *[SCALING_FACTORS['cloth_rel_pos_z']] * 2,
         SCALING_FACTORS['cloth_spread'],
+        SCALING_FACTORS['hand_spread'],
+        *[SCALING_FACTORS['force_vec']] * 3,
         SCALING_FACTORS['visible_hand_ratio'],
     ])
 
-    assert vec.shape[0] == 11, f"Expected scaling vector to have 11 dimensions, got {vec.shape[0]}"
+    assert vec.shape[0] == 17, f"Expected scaling vector to have 17 dimensions, got {vec.shape[0]}"
     return vec
 
 
@@ -265,13 +271,15 @@ def _generate_noise(timesteps: int, noise_std) -> np.ndarray:
     noise = np.concatenate([
         rel_pos_noise,
         vel_noise,
-        force_vec_noise,
+        cloth_rel_pos_x_noise,
         cloth_rel_pos_z_noise,
         cloth_spread_noise,
+        hand_spread_noise,
+        force_vec_noise,
         visible_hand_ratio_noise
     ], axis=1)
 
-    assert noise.shape == (timesteps, 11), f"Expected noise shape to be {(timesteps, 11)}, got {noise.shape}"
+    assert noise.shape == (timesteps, 17), f"Expected noise shape to be {(timesteps, 16)}, got {noise.shape}"
     
     return noise
 

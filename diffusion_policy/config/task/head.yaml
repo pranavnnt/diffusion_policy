@@ -18,7 +18,7 @@ dataset:
   domain_encoding_dim: 2
   seed: 42
   zarr_configs:
-    - path: /scratch/pnt8/dressing_demos/real/head/Jan19-21_combined.zarr
+    - path: /scratch/pnt8/dressing_demos/real/head/Jan19-21-27_combined.zarr
       name: real
       max_train_episodes: null
       sampling_weight: 1.0
