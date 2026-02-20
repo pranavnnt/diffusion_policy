@@ -1,6 +1,6 @@
 name: right_arm
 
-obs_dim: 11
+obs_dim: 17
 action_dim: 2
 keypoint_dim: 0
 obs_eef_target: False
