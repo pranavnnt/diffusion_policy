@@ -1,6 +1,6 @@
 defaults:
   - _self_
-  - task: dressing_real_finetune
+  - task: left_arm
 
 name: dressing_real_finetuned
 _target_: diffusion_policy.workspace.train_diffusion_unet_real_lowdim_workspace.TrainDiffusionUnetRealLowdimWorkspace
