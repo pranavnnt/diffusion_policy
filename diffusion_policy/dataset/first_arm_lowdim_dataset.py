@@ -93,7 +93,7 @@ class FirstArmLowdimDataset(BaseLowdimDataset):
         bigger_hole_area = obs[:, 11:12]       # keep 2-D shape
         arm_pos = obs[:, 12:24]
         hand_pos = obs[:, 24:31]
-        cloth_features = obs[:, 31:]
+        cloth_features = obs[:, 31:37]
 
         # distance between fingertip and EEF in X direction
         rel_pos_x = np.expand_dims(pos[:, 0] - arm_pos[:, 0], axis=1)
@@ -137,7 +137,7 @@ class FirstArmLowdimDataset(BaseLowdimDataset):
         act = sample[self.action_key]     # shape [T, D_a]
         
         assert obs.ndim == 2, f"Expected obs to be 2D, got {obs.ndim}D"
-        assert obs.shape[1] == 37, f"Expected obs to have 37 dimensions, got {obs.shape[1]}"
+        assert obs.shape[1] == 38, f"Expected obs to have 38 dimensions, got {obs.shape[1]}"
         
         obs_trimmed = np.array(self._filter_obs(obs))
         # Remove forearm and backarm position from state
