@@ -1,6 +1,6 @@
 defaults:
   - _self_
-  - task: first_arm_lowdim
+  - task: dressing_sim
   # - task: first_arm_lowdim
 
 name: train_diffusion_unet_lowdim_upsampled

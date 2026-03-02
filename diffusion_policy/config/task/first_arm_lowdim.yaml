@@ -16,5 +16,5 @@ dataset:
   seed: 42
   val_ratio: 0.02
   upsampled: True
-  upsample_multiplier: 5 
+  upsample_multiplier: 4 
   eval: True
