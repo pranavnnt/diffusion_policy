@@ -114,8 +114,8 @@ class DressingSimDataset(BaseLowdimDataset):
         assert obs.shape[1] == 38, f"Expected obs to have 38 dimensions, got {obs.shape[1]}"
 
         obs_filtered = filter_sim_obs(obs)
-        assert obs_filtered.shape[1] == 16, (
-            f"Expected filtered obs to have 16 dimensions, got {obs_filtered.shape[1]}"
+        assert obs_filtered.shape[1] == 14, (
+            f"Expected filtered obs to have 14 dimensions, got {obs_filtered.shape[1]}"
         )
 
         act_trimmed = act[:, [0, 2]]

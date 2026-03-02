@@ -120,7 +120,7 @@ def filter_sim_obs(obs: np.ndarray) -> np.ndarray:
         obs: Raw observation array of shape (T, 38)
 
     Returns:
-        Filtered observation array of shape (T, 16)
+        Filtered observation array of shape (T, 14)
     """
     components = _extract_observation_components(obs)
 
@@ -138,8 +138,8 @@ def filter_sim_obs(obs: np.ndarray) -> np.ndarray:
     force_vec = _compute_force_vector(components['force'])
 
     obs_filtered = np.concatenate([
-        rel_features['rel_pos_x'],
-        rel_features['rel_pos_z'],
+        # rel_features['rel_pos_x'],
+        # rel_features['rel_pos_z'],
         rel_features['vel_x'],
         rel_features['vel_z'],
         cloth_hand_features['cloth_rel_pos_x'],
@@ -149,7 +149,7 @@ def filter_sim_obs(obs: np.ndarray) -> np.ndarray:
         force_vec,
     ], axis=1)
 
-    assert obs_filtered.shape[1] == 16, f"Expected 16D obs, got {obs_filtered.shape[1]}"
+    assert obs_filtered.shape[1] == 14, f"Expected 14D obs, got {obs_filtered.shape[1]}"
 
     return obs_filtered
 
@@ -176,7 +176,7 @@ def filter_real_obs(obs: np.ndarray) -> np.ndarray:
     vel_xz = vel[:, [0, 2]]
 
     obs_filtered = np.concatenate([
-        pos_xz,
+        # pos_xz,
         vel_xz,
         cloth_rel_pos_x,
         cloth_rel_pos_z,
@@ -184,7 +184,7 @@ def filter_real_obs(obs: np.ndarray) -> np.ndarray:
         hand_spread,
         force,
     ], axis=1)
-    assert obs_filtered.shape[1] == 16, f"Expected filtered real obs to have 16 dimensions, got {obs_filtered.shape[1]}"
+    assert obs_filtered.shape[1] == 14, f"Expected filtered real obs to have 14 dimensions, got {obs_filtered.shape[1]}"
 
     return obs_filtered
 
@@ -192,8 +192,8 @@ def filter_real_obs(obs: np.ndarray) -> np.ndarray:
 def _build_scaling_vector() -> np.ndarray:
     """Build the scaling vector for observations."""
     vec = np.array([
-        SCALING_FACTORS['rel_pos_x'],
-        SCALING_FACTORS['rel_pos_z'],
+        # SCALING_FACTORS['rel_pos_x'],
+        # SCALING_FACTORS['rel_pos_z'],
         SCALING_FACTORS['vel_x'],
         SCALING_FACTORS['vel_z'],
         *[SCALING_FACTORS['cloth_rel_pos_x']] * 5,
@@ -203,7 +203,7 @@ def _build_scaling_vector() -> np.ndarray:
         *[SCALING_FACTORS['force_vec']] * 3,
     ])
 
-    assert vec.shape[0] == 16, f"Expected scaling vector to have 16 dimensions, got {vec.shape[0]}"
+    assert vec.shape[0] == 14, f"Expected scaling vector to have 14 dimensions, got {vec.shape[0]}"
     return vec
 
 
@@ -244,7 +244,7 @@ def unscale_action(action_scaled: np.ndarray) -> np.ndarray:
 
 
 def _generate_noise(timesteps: int, noise_std: dict) -> np.ndarray:
-    """Generate noise for 16D observations.
+    """Generate noise for 14D observations.
 
     Per-timestep noise: vel, cloth_rel_pos_z, cloth_spread, force_vec
     Per-episode noise (shared across timesteps): rel_pos, cloth_rel_pos_x, hand_spread
@@ -254,7 +254,7 @@ def _generate_noise(timesteps: int, noise_std: dict) -> np.ndarray:
         noise_std: Dict of noise standard deviations
 
     Returns:
-        Noise array of shape (T, 16)
+        Noise array of shape (T, 14)
     """
     # Independent noise per timestep
     vel_noise = np.random.normal(0, noise_std['vel'], size=(timesteps, 2))
@@ -277,7 +277,7 @@ def _generate_noise(timesteps: int, noise_std: dict) -> np.ndarray:
     )
 
     noise = np.concatenate([
-        rel_pos_noise,
+        # rel_pos_noise,
         vel_noise,
         cloth_rel_pos_x_noise,
         cloth_rel_pos_z_noise,
@@ -286,7 +286,7 @@ def _generate_noise(timesteps: int, noise_std: dict) -> np.ndarray:
         force_vec_noise,
     ], axis=1)
 
-    assert noise.shape == (timesteps, 16), f"Expected noise shape {(timesteps, 16)}, got {noise.shape}"
+    assert noise.shape == (timesteps, 14), f"Expected noise shape {(timesteps, 14)}, got {noise.shape}"
 
     return noise
 
@@ -298,7 +298,7 @@ def add_noise(obs: Dict[str, np.ndarray], dataset_name: str) -> Dict[str, np.nda
     For real: noise is added directly in real-world units (already unscaled).
 
     Args:
-        obs: Dictionary containing 'obs' key with array of shape (T, 16)
+        obs: Dictionary containing 'obs' key with array of shape (T, 14)
         dataset_name: 'sim' or 'real'
 
     Returns:
