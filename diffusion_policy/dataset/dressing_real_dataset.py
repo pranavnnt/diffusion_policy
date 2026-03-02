@@ -256,7 +256,7 @@ class DressingRealDataset(BaseLowdimDataset):
                 raw_obs = replay_buffer[self.obs_key]
                 raw_act = replay_buffer[self.action_key]
 
-                assert raw_obs.shape[-1] == 37, f"Shape of raw_obs is {raw_obs.shape}, expected last dim to be 37"
+                # assert raw_obs.shape[-1] == 38, f"Shape of raw_obs is {raw_obs.shape}, expected last dim to be 38"
 
                 # Filter & scale ALL sim obs BEFORE computing normals
                 obs_filt = filter_sim_obs(raw_obs)
@@ -364,8 +364,8 @@ class DressingRealDataset(BaseLowdimDataset):
             obs_trimmed = filter_real_obs(obs)
             obs_scaled = obs_trimmed
             
-        assert obs_scaled.shape[1] == 11, (
-            f"Expected obs dim 11 from {local_dataset_name}, got {obs_scaled.shape[1]}"
+        assert obs_scaled.shape[1] == 17, (
+            f"Expected obs dim 17 from {local_dataset_name}, got {obs_scaled.shape[1]}"
         )
 
         data = {

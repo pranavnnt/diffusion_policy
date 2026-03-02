@@ -1,5 +1,8 @@
 name: head_dressing
 
+eval:
+  ckpt: /home/dressing/workspace/bimanual_ws/src/bimanual_dressing/src/dressing_policies/weights/head/2026.01.28_18.24.08_head_with_some_safety_data_head_dressing/checkpoints/latest.ckpt
+
 obs_dim: 23
 action_dim: 6
 keypoint_dim: 0
@@ -18,7 +21,7 @@ dataset:
   domain_encoding_dim: 2
   seed: 42
   zarr_configs:
-    - path: /scratch/pnt8/dressing_demos/real/head/Jan19-20_combined.zarr
+    - path: /home/dressing/workspace/bimanual_ws/src/bimanual_dressing/src/dressing_policies/demos/inference/real/head/Jan19-21-27_combined.zarr
       name: real
       max_train_episodes: null
       sampling_weight: 1.0

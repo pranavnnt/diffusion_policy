@@ -117,7 +117,7 @@ training:
   resume: False  # False for initial finetuning
 
 eval:
-  ckpt: /home/dressing/workspace/bimanual_ws/src/bimanual_dressing/src/dressing_policies/weights/right/2026.01.20_17.24.18_no_pretrain_with_upsample_low_noise_dressing_real_first_arm_finetune/checkpoints/latest.ckpt
+  ckpt: ${task.eval.ckpt}
 
 logging:
   project: dressing_real
