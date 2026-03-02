@@ -151,10 +151,10 @@ def filter_sim_obs(obs: np.ndarray) -> np.ndarray:
         cloth_hand_features['cloth_spread'],
         cloth_hand_features['hand_spread'],
         force_vec,
-        components['visible_hand_ratio'],  
+        # components['visible_hand_ratio'],  
     ], axis=1)
 
-    assert obs_filtered.shape[1] == 17
+    assert obs_filtered.shape[1] == 16
     
     return obs_filtered
 
@@ -188,9 +188,9 @@ def filter_real_obs(obs: np.ndarray) -> np.ndarray:
         cloth_spread,
         hand_spread,
         force,
-        visible_hand_ratio
+        # visible_hand_ratio
     ], axis=1)
-    assert obs_filtered.shape[1] == 17, f"Expected filtered real obs to have 17 dimensions, got {obs_filtered.shape[1]}"
+    assert obs_filtered.shape[1] == 16, f"Expected filtered real obs to have 16 dimensions, got {obs_filtered.shape[1]}"
 
     return obs_filtered
 
@@ -206,10 +206,10 @@ def _build_scaling_vector() -> np.ndarray:
         SCALING_FACTORS['cloth_spread'],
         SCALING_FACTORS['hand_spread'],
         *[SCALING_FACTORS['force_vec']] * 3,
-        SCALING_FACTORS['visible_hand_ratio'],
+        # SCALING_FACTORS['visible_hand_ratio'],
     ])
 
-    assert vec.shape[0] == 17, f"Expected scaling vector to have 17 dimensions, got {vec.shape[0]}"
+    assert vec.shape[0] == 16, f"Expected scaling vector to have 16 dimensions, got {vec.shape[0]}"
     return vec
 
 
@@ -276,10 +276,10 @@ def _generate_noise(timesteps: int, noise_std) -> np.ndarray:
         cloth_spread_noise,
         hand_spread_noise,
         force_vec_noise,
-        visible_hand_ratio_noise
+        # visible_hand_ratio_noise
     ], axis=1)
 
-    assert noise.shape == (timesteps, 17), f"Expected noise shape to be {(timesteps, 16)}, got {noise.shape}"
+    assert noise.shape == (timesteps, 16), f"Expected noise shape to be {(timesteps, 16)}, got {noise.shape}"
     
     return noise
 
