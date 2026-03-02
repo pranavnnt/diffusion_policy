@@ -138,10 +138,10 @@ def filter_sim_obs(obs: np.ndarray) -> np.ndarray:
     force_vec = _compute_force_vector(components['force'])
 
     obs_filtered = np.concatenate([
-        # rel_features['rel_pos_x'],
-        # rel_features['rel_pos_z'],
-        rel_features['vel_x'],
-        rel_features['vel_z'],
+        rel_features['rel_pos_x'],
+        rel_features['rel_pos_z'],
+        # rel_features['vel_x'],
+        # rel_features['vel_z'],
         cloth_hand_features['cloth_rel_pos_x'],
         cloth_hand_features['cloth_rel_pos_z'],
         cloth_hand_features['cloth_spread'],
@@ -176,8 +176,8 @@ def filter_real_obs(obs: np.ndarray) -> np.ndarray:
     vel_xz = vel[:, [0, 2]]
 
     obs_filtered = np.concatenate([
-        # pos_xz,
-        vel_xz,
+        pos_xz,
+        # vel_xz,
         cloth_rel_pos_x,
         cloth_rel_pos_z,
         cloth_spread,
@@ -192,10 +192,10 @@ def filter_real_obs(obs: np.ndarray) -> np.ndarray:
 def _build_scaling_vector() -> np.ndarray:
     """Build the scaling vector for observations."""
     vec = np.array([
-        # SCALING_FACTORS['rel_pos_x'],
-        # SCALING_FACTORS['rel_pos_z'],
-        SCALING_FACTORS['vel_x'],
-        SCALING_FACTORS['vel_z'],
+        SCALING_FACTORS['rel_pos_x'],
+        SCALING_FACTORS['rel_pos_z'],
+        # SCALING_FACTORS['vel_x'],
+        # SCALING_FACTORS['vel_z'],
         *[SCALING_FACTORS['cloth_rel_pos_x']] * 5,
         *[SCALING_FACTORS['cloth_rel_pos_z']] * 2,
         SCALING_FACTORS['cloth_spread'],
@@ -277,8 +277,8 @@ def _generate_noise(timesteps: int, noise_std: dict) -> np.ndarray:
     )
 
     noise = np.concatenate([
-        # rel_pos_noise,
-        vel_noise,
+        rel_pos_noise,
+        # vel_noise,
         cloth_rel_pos_x_noise,
         cloth_rel_pos_z_noise,
         cloth_spread_noise,
