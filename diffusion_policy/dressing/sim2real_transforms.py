@@ -19,7 +19,7 @@ SCALING_FACTORS = {
 SIM_NOISE_STD = {
     'rel_pos': np.array([1, 1], dtype=np.float32),
     'vel': np.array([0.5, 0.5], dtype=np.float32),
-    'cloth_rel_pos_x': np.array([1, 1, 1, 1, 1], dtype=np.float32),
+    'cloth_rel_pos_x': np.array([1], dtype=np.float32),
     'cloth_rel_pos_z': np.array([2, 2], dtype=np.float32),
     'cloth_spread': np.array([2], dtype=np.float32),
     'hand_spread': np.array([1], dtype=np.float32),
@@ -29,7 +29,7 @@ SIM_NOISE_STD = {
 REAL_NOISE_STD = {
     'rel_pos': np.array([0.005, 0.002], dtype=np.float32),
     'vel': np.array([0.001, 0.001], dtype=np.float32),
-    'cloth_rel_pos_x': np.array([0.002, 0.002, 0.002, 0.002, 0.0002], dtype=np.float32),
+    'cloth_rel_pos_x': np.array([0.002], dtype=np.float32),
     'cloth_rel_pos_z': np.array([0.005, 0.001], dtype=np.float32),
     'cloth_spread': np.array([0.005], dtype=np.float32),
     'hand_spread': np.array([0.002], dtype=np.float32),
@@ -120,7 +120,7 @@ def filter_sim_obs(obs: np.ndarray) -> np.ndarray:
         obs: Raw observation array of shape (T, 38)
 
     Returns:
-        Filtered observation array of shape (T, 13)
+        Filtered observation array of shape (T, 12)
     """
     components = _extract_observation_components(obs)
 
@@ -142,14 +142,14 @@ def filter_sim_obs(obs: np.ndarray) -> np.ndarray:
         rel_features['rel_pos_z'],
         rel_features['vel_x'],
         rel_features['vel_z'],
-        cloth_hand_features['cloth_rel_pos_x'],
+        np.min(cloth_hand_features['cloth_rel_pos_x'], axis=1, keepdims=True),
         cloth_hand_features['cloth_rel_pos_z'],
         cloth_hand_features['cloth_spread'],
         cloth_hand_features['hand_spread'],
-        # force_vec,
+        force_vec,
     ], axis=1)
 
-    assert obs_filtered.shape[1] == 13, f"Expected 13D obs, got {obs_filtered.shape[1]}"
+    assert obs_filtered.shape[1] == 12, f"Expected 12D obs, got {obs_filtered.shape[1]}"
 
     return obs_filtered
 
@@ -162,7 +162,7 @@ def filter_real_obs(obs: np.ndarray) -> np.ndarray:
 
     # State vector layout from thread_arm_env.py:
     # 0-2: pos (x,y,z), 3-5: vel (x,y,z), 6-10: cloth_rel_pos_x (5),
-    # 11-12: cloth_rel_pos_z (2), 13: cloth_spread, 13: hand_spread,
+    # 11-12: cloth_rel_pos_z (2), 13: cloth_spread, 14: hand_spread,
     # 15-17: force (3), 18: visible_hand_ratio (dropped)
     pos = obs_front_only[:, :3]
     vel = obs_front_only[:, 3:6]
@@ -178,13 +178,13 @@ def filter_real_obs(obs: np.ndarray) -> np.ndarray:
     obs_filtered = np.concatenate([
         pos_xz,
         vel_xz,
-        cloth_rel_pos_x,
+        np.min(cloth_rel_pos_x, axis=1, keepdims=True),
         cloth_rel_pos_z,
         cloth_spread,
         hand_spread,
-        # force,
+        force,
     ], axis=1)
-    assert obs_filtered.shape[1] == 13, f"Expected filtered real obs to have 13 dimensions, got {obs_filtered.shape[1]}"
+    assert obs_filtered.shape[1] == 12, f"Expected filtered real obs to have 12 dimensions, got {obs_filtered.shape[1]}"
 
     return obs_filtered
 
@@ -196,14 +196,14 @@ def _build_scaling_vector() -> np.ndarray:
         SCALING_FACTORS['rel_pos_z'],
         SCALING_FACTORS['vel_x'],
         SCALING_FACTORS['vel_z'],
-        *[SCALING_FACTORS['cloth_rel_pos_x']] * 5,
+        *[SCALING_FACTORS['cloth_rel_pos_x']] * 1,
         *[SCALING_FACTORS['cloth_rel_pos_z']] * 2,
         SCALING_FACTORS['cloth_spread'],
         SCALING_FACTORS['hand_spread'],
-        # *[SCALING_FACTORS['force_vec']] * 3,
+        *[SCALING_FACTORS['force_vec']] * 3,
     ])
 
-    assert vec.shape[0] == 13, f"Expected scaling vector to have 13 dimensions, got {vec.shape[0]}"
+    assert vec.shape[0] == 12, f"Expected scaling vector to have 12 dimensions, got {vec.shape[0]}"
     return vec
 
 
@@ -244,7 +244,7 @@ def unscale_action(action_scaled: np.ndarray) -> np.ndarray:
 
 
 def _generate_noise(timesteps: int, noise_std: dict) -> np.ndarray:
-    """Generate noise for 13D observations.
+    """Generate noise for 12D observations.
 
     Per-timestep noise: vel, cloth_rel_pos_z, cloth_spread, force_vec
     Per-episode noise (shared across timesteps): rel_pos, cloth_rel_pos_x, hand_spread
@@ -254,7 +254,7 @@ def _generate_noise(timesteps: int, noise_std: dict) -> np.ndarray:
         noise_std: Dict of noise standard deviations
 
     Returns:
-        Noise array of shape (T, 13)
+        Noise array of shape (T, 12)
     """
     # Independent noise per timestep
     vel_noise = np.random.normal(0, noise_std['vel'], size=(timesteps, 2))
@@ -268,7 +268,7 @@ def _generate_noise(timesteps: int, noise_std: dict) -> np.ndarray:
         (timesteps, 1)
     )
     cloth_rel_pos_x_noise = np.tile(
-        np.random.normal(0, noise_std['cloth_rel_pos_x'], size=(1, 5)),
+        np.random.normal(0, noise_std['cloth_rel_pos_x'], size=(1, 1)),
         (timesteps, 1)
     )
     hand_spread_noise = np.tile(
@@ -283,10 +283,10 @@ def _generate_noise(timesteps: int, noise_std: dict) -> np.ndarray:
         cloth_rel_pos_z_noise,
         cloth_spread_noise,
         hand_spread_noise,
-        # force_vec_noise,
+        force_vec_noise,
     ], axis=1)
 
-    assert noise.shape == (timesteps, 13), f"Expected noise shape {(timesteps, 13)}, got {noise.shape}"
+    assert noise.shape == (timesteps, 12), f"Expected noise shape {(timesteps, 12)}, got {noise.shape}"
 
     return noise
 
@@ -298,7 +298,7 @@ def add_noise(obs: Dict[str, np.ndarray], dataset_name: str) -> Dict[str, np.nda
     For real: noise is added directly in real-world units (already unscaled).
 
     Args:
-        obs: Dictionary containing 'obs' key with array of shape (T, 13)
+        obs: Dictionary containing 'obs' key with array of shape (T, 12)
         dataset_name: 'sim' or 'real'
 
     Returns:
