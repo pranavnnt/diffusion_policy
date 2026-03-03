@@ -143,10 +143,10 @@ def filter_sim_obs(obs: np.ndarray) -> np.ndarray:
         rel_features['vel_x'],
         rel_features['vel_z'],
         cloth_hand_features['cloth_rel_pos_x'],
-        cloth_hand_features['cloth_rel_pos_z'],
+        # cloth_hand_features['cloth_rel_pos_z'],
         cloth_hand_features['cloth_spread'],
-        cloth_hand_features['hand_spread'],
-        # force_vec,
+        # cloth_hand_features['hand_spread'],
+        force_vec,
     ], axis=1)
 
     assert obs_filtered.shape[1] == 13, f"Expected 13D obs, got {obs_filtered.shape[1]}"
@@ -179,10 +179,10 @@ def filter_real_obs(obs: np.ndarray) -> np.ndarray:
         pos_xz,
         vel_xz,
         cloth_rel_pos_x,
-        cloth_rel_pos_z,
+        # cloth_rel_pos_z,
         cloth_spread,
-        hand_spread,
-        # force,
+        # hand_spread,
+        force,
     ], axis=1)
     assert obs_filtered.shape[1] == 13, f"Expected filtered real obs to have 13 dimensions, got {obs_filtered.shape[1]}"
 
@@ -197,10 +197,10 @@ def _build_scaling_vector() -> np.ndarray:
         SCALING_FACTORS['vel_x'],
         SCALING_FACTORS['vel_z'],
         *[SCALING_FACTORS['cloth_rel_pos_x']] * 5,
-        *[SCALING_FACTORS['cloth_rel_pos_z']] * 2,
+        # *[SCALING_FACTORS['cloth_rel_pos_z']] * 2,
         SCALING_FACTORS['cloth_spread'],
-        SCALING_FACTORS['hand_spread'],
-        # *[SCALING_FACTORS['force_vec']] * 3,
+        # SCALING_FACTORS['hand_spread'],
+        *[SCALING_FACTORS['force_vec']] * 3,
     ])
 
     assert vec.shape[0] == 13, f"Expected scaling vector to have 13 dimensions, got {vec.shape[0]}"
@@ -280,10 +280,10 @@ def _generate_noise(timesteps: int, noise_std: dict) -> np.ndarray:
         rel_pos_noise,
         vel_noise,
         cloth_rel_pos_x_noise,
-        cloth_rel_pos_z_noise,
+        # cloth_rel_pos_z_noise,
         cloth_spread_noise,
-        hand_spread_noise,
-        # force_vec_noise,
+        # hand_spread_noise,
+        force_vec_noise,
     ], axis=1)
 
     assert noise.shape == (timesteps, 13), f"Expected noise shape {(timesteps, 13)}, got {noise.shape}"
