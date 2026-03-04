@@ -67,10 +67,11 @@ def filter_head_obs(obs: np.ndarray) -> np.ndarray:
         arm2_rel_pos_z,
         individual_components['arm2_vel'],
         individual_components['arm2_force'],
-        # coverage,
-        hull_centroid,
-        hull_area], axis=1)
-    assert obs_filtered.shape[1] == 22, f"Expected filtered real obs to have 22 dimensions, got {obs_filtered.shape[1]}"
+        coverage], axis=1)
+        # hull_centroid,
+        # hull_area]
+
+    assert obs_filtered.shape[1] == 19, f"Expected filtered real obs to have 19 dimensions, got {obs_filtered.shape[1]}"
 
     return obs_filtered
 
@@ -84,7 +85,7 @@ def _generate_noise(timesteps: int, noise_std) -> np.ndarray:
     arm2_rel_pos_noise = np.random.normal(0, noise_std['rel_pos'], size=(timesteps, 3))
     arm2_vel_noise = np.random.normal(0, noise_std['vel'], size=(timesteps, 3))
     arm2_force_noise = np.random.normal(0, noise_std['force'], size=(timesteps, 3))
-    # coverage_noise = np.random.normal(0, noise_std['coverage'], size=(timesteps, 1))
+    coverage_noise = np.random.normal(0, noise_std['coverage'], size=(timesteps, 1))
     hull_centroid_noise = np.random.normal(0, noise_std['hull_centroid'], size=(timesteps, 3))
     hull_area_noise = np.random.normal(0, noise_std['hull_area'], size=(timesteps, 1))
 
@@ -97,12 +98,12 @@ def _generate_noise(timesteps: int, noise_std) -> np.ndarray:
         arm2_rel_pos_noise,
         arm2_vel_noise,
         arm2_force_noise,
-        # coverage_noise,
-        hull_centroid_noise,
-        hull_area_noise
+        coverage_noise,
+        # hull_centroid_noise,
+        # hull_area_noise
     ], axis=1)
 
-    assert noise.shape == (timesteps, 22), f"Expected noise shape to be {(timesteps, 22)}, got {noise.shape}"
+    assert noise.shape == (timesteps, 19), f"Expected noise shape to be {(timesteps, 19)}, got {noise.shape}"
     
     return noise
 
