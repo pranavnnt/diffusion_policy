@@ -1,7 +1,7 @@
 name: head_dressing
 
 eval:
-  ckpt: /home/dressing/workspace/bimanual_ws/src/bimanual_dressing/src/dressing_policies/weights/head/2026.01.28_18.24.08_head_with_some_safety_data_head_dressing/checkpoints/latest.ckpt
+  ckpt: /home/dressing/workspace/bimanual_ws/src/bimanual_dressing/src/dressing_policies/weights/head/2026.01.21_05.19.20_head_dressing_normal_16_8_8_head_dressing/checkpoints/latest.ckpt
 
 obs_dim: 23
 action_dim: 6
