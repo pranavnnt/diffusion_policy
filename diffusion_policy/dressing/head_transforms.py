@@ -57,15 +57,15 @@ def filter_head_obs(obs: np.ndarray) -> np.ndarray:
     hull_area = individual_components['hull_area']
 
     obs_filtered =  np.concatenate([
-        # arm1_rel_pos_x,
-        # arm1_rel_pos_y,
-        # arm1_rel_pos_z,
-        individual_components['arm1_vel'],
+        arm1_rel_pos_x,
+        arm1_rel_pos_y,
+        arm1_rel_pos_z,
+        # individual_components['arm1_vel'],
         individual_components['arm1_force'],
-        # arm2_rel_pos_x,
-        # arm2_rel_pos_y,
-        # arm2_rel_pos_z,
-        individual_components['arm2_vel'],
+        arm2_rel_pos_x,
+        arm2_rel_pos_y,
+        arm2_rel_pos_z,
+        # individual_components['arm2_vel'],
         individual_components['arm2_force'],
         coverage,
         hull_centroid,
@@ -91,18 +91,18 @@ def _generate_noise(timesteps: int, noise_std) -> np.ndarray:
     # Shared noise across all timesteps (one sample per episode)
 
     noise = np.concatenate([
-        # arm1_rel_pos_noise,
-        arm1_vel_noise,
+        arm1_rel_pos_noise,
+        # arm1_vel_noise,
         arm1_force_noise,
-        # arm2_rel_pos_noise,
-        arm2_vel_noise,
+        arm2_rel_pos_noise,
+        # arm2_vel_noise,
         arm2_force_noise,
         coverage_noise,
         hull_centroid_noise,
         hull_area_noise
     ], axis=1)
 
-    assert noise.shape == (timesteps, 17), f"Expected noise shape to be {(timesteps, 17)}, got {noise.shape}"
+    assert noise.shape == (timesteps, 23), f"Expected noise shape to be {(timesteps, 23)}, got {noise.shape}"
     
     return noise
 
