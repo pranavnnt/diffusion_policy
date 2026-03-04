@@ -19,6 +19,41 @@ from diffusion_policy.dataset.util import fix_small_variance_normalizer
 
 ACTION_THRESHOLD = 1e-3
 
+# Raw observation force indices (from _extract_observation_components in head_transforms.py)
+# arm1_force: obs[:, 6:9], arm2_force: obs[:, 15:18]
+ARM1_FORCE_SLICE = slice(6, 9)
+ARM2_FORCE_SLICE = slice(15, 18)
+
+
+def filter_zero_force_episodes(
+    episode_obs_list: list, episode_actions_list: list
+) -> tuple:
+    """Filter out episodes where arm1 or arm2 force is all zeros across the entire episode.
+
+    An episode is dropped if all timesteps have arm1_force == 0 OR all timesteps have
+    arm2_force == 0 (i.e., the sensor reported no force at all for that robot).
+
+    Args:
+        episode_obs_list: List of per-episode obs arrays, each of shape [T, 29]
+        episode_actions_list: List of per-episode action arrays, each of shape [T, D_a]
+
+    Returns:
+        Tuple of (filtered_obs_list, filtered_actions_list, n_dropped)
+    """
+    filtered_obs = []
+    filtered_actions = []
+    n_dropped = 0
+    for obs, actions in zip(episode_obs_list, episode_actions_list):
+        arm1_force = obs[:, ARM1_FORCE_SLICE]
+        arm2_force = obs[:, ARM2_FORCE_SLICE]
+        if np.all(arm1_force == 0) or np.all(arm2_force == 0):
+            n_dropped += 1
+            continue
+        filtered_obs.append(obs)
+        filtered_actions.append(actions)
+    return filtered_obs, filtered_actions, n_dropped
+
+
 def filter_small_actions(obs: np.ndarray, actions: np.ndarray, threshold: float = ACTION_THRESHOLD) -> tuple:
     """Filter out timesteps where all action values are below threshold.
     
@@ -72,26 +107,36 @@ def load_and_filter_replay_buffer(
     all_actions = original_buffer[action_key][:]
     
     print(f"Action num before filter: {len(all_actions)}")
-    
+
+    # Collect all episodes
+    episode_obs_list = []
+    episode_actions_list = []
+    start_idx = 0
+    for end_idx in episode_ends:
+        episode_obs_list.append(all_obs[start_idx:end_idx])
+        episode_actions_list.append(all_actions[start_idx:end_idx])
+        start_idx = end_idx
+
+    # Filter episodes where either robot's force is all zeros
+    episode_obs_list, episode_actions_list, n_zero_force_dropped = filter_zero_force_episodes(
+        episode_obs_list, episode_actions_list
+    )
+    print(f"Episodes dropped due to all-zero force: {n_zero_force_dropped}")
+
     # Create new replay buffer
     filtered_buffer = ReplayBuffer.create_empty_numpy()
-    
+
     # Process each episode
     total_before = 0
     total_after = 0
-    start_idx = 0
-    for end_idx in episode_ends:
-        # Extract episode data
-        episode_obs = all_obs[start_idx:end_idx]
-        episode_actions = all_actions[start_idx:end_idx]
-        
+    for episode_obs, episode_actions in zip(episode_obs_list, episode_actions_list):
         total_before += len(episode_obs)
-        
+
         # Filter small actions
         filtered_obs, filtered_actions = filter_small_actions(
             episode_obs, episode_actions, threshold
         )
-        
+
         # Only add episode if it has data after filtering
         if len(filtered_obs) > 0:
             filtered_buffer.add_episode(
@@ -101,9 +146,7 @@ def load_and_filter_replay_buffer(
                 }
             )
             total_after += len(filtered_obs)
-        
-        start_idx = end_idx
-    
+
     print(f"Action num after filter: {total_after}")
     
     return filtered_buffer

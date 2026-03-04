@@ -1,8 +1,11 @@
 name: right_arm
 
+<<<<<<< HEAD
 eval:
   ckpt: /home/dressing/workspace/bimanual_ws/src/bimanual_dressing/src/dressing_policies/weights/right/2026.02.28_19.24.09_old+new_less_noise_no_upsampling_right_arm/checkpoints/epoch=0050-val_loss=0.050.ckpt
 
+=======
+>>>>>>> origin/head_dressing_pt
 obs_dim: 17
 action_dim: 2
 keypoint_dim: 0
@@ -29,7 +32,11 @@ dataset:
     upsample_multiplier: 2
     domain_encoding: [1, 0]
   # Real datasets get all the training weight
+<<<<<<< HEAD
   - path: /home/dressing/workspace/bimanual_ws/src/bimanual_dressing/src/dressing_policies/demos/inference/real/right/Feb25-27_combined.zarr    
+=======
+  - path: /scratch/pnt8/dressing_demos/real/right/Jan-to-Feb27_combined_upsampled_x2.zarr 
+>>>>>>> origin/head_dressing_pt
     name: real_first_arm
     max_train_episodes: null
     sampling_weight: 1.0  # 100% real arm 1

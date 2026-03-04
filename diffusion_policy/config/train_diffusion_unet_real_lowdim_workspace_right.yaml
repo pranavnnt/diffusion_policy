@@ -1,9 +1,9 @@
 defaults:
   - _self_
-  - task: head
+  - task: right_arm
 
-name: head_dressing
-_target_: diffusion_policy.workspace.train_diffusion_unet_lowdim_workspace.TrainDiffusionUnetLowdimWorkspace
+name: right
+_target_: diffusion_policy.workspace.train_diffusion_unet_real_lowdim_workspace.TrainDiffusionUnetRealLowdimWorkspace
 
 obs_dim: ${task.obs_dim}
 action_dim: ${task.action_dim}
@@ -11,9 +11,9 @@ keypoint_dim: ${task.keypoint_dim}
 task_name: ${task.name}
 exp_name: "default"
 
-horizon: 8
-n_obs_steps: 2
-n_action_steps: 4
+horizon: 32
+n_obs_steps: 16
+n_action_steps: 8
 n_latency_steps: 0
 past_action_visible: False
 keypoint_visible_rate: 1.0
@@ -22,7 +22,7 @@ obs_as_global_cond: True
 pred_action_steps_only: False
 
 policy:
-  _target_: diffusion_policy.policy.diffusion_unet_lowdim_policy.DiffusionUnetLowdimPolicy
+  _target_: diffusion_policy.policy.diffusion_unet_real_lowdim_policy.DiffusionUnetRealLowdimPolicy
 
   model:
     _target_: diffusion_policy.model.diffusion.conditional_unet1d.ConditionalUnet1D
@@ -70,21 +70,21 @@ ema:
 
 dataloader:
   batch_size: 256
-  num_workers: 1
+  num_workers: 8
   shuffle: True
   pin_memory: True
-  persistent_workers: False
+  persistent_workers: True
 
 val_dataloader:
   batch_size: 256
-  num_workers: 1
+  num_workers: 8
   shuffle: False
   pin_memory: True
-  persistent_workers: False
+  persistent_workers: True
 
 optimizer:
   _target_: torch.optim.AdamW
-  lr: 3.0e-5
+  lr: 3.0e-6
   betas: [0.95, 0.999]
   eps: 1.0e-8
   weight_decay: 1.0e-6
@@ -93,11 +93,10 @@ training:
   device: "cuda:0"
   seed: 42
   debug: False
-  resume: False
   # optimization
   lr_scheduler: cosine
   lr_warmup_steps: 1000
-  num_epochs: 50
+  num_epochs: 100
   gradient_accumulate_every: 1
   use_ema: True
   # training loop control
@@ -111,9 +110,14 @@ training:
   max_val_steps: null
   # misc
   tqdm_interval_sec: 1.0
+  freeze_action_normalizer: False
+
+  # config/finetune_real.yaml
+  # pretrained_checkpoint: /home/pnt8/workspace/dressing_sim_ws/diffusion_policy/data/outputs/2026.01.20_22.30.51_big_model_with_upsampling_dressing_sim/checkpoints/latest.ckpt
+  resume: False  # False for initial finetuning
 
 logging:
-  project: dressing_head
+  project: dressing_real
   resume: True
   mode: online
   name: ${now:%Y.%m.%d-%H.%M.%S}_${name}_${task_name}
@@ -130,18 +134,15 @@ checkpoint:
   save_last_ckpt: True
   save_last_snapshot: False
 
-eval:
-  ckpt: ${task.eval.ckpt}
-
 multi_run:
-  run_dir: data/outputs/${now:%Y.%m.%d}/${now:%H.%M.%S}_${name}_${task_name}
+  run_dir: data/outputs/real/${now:%Y.%m.%d}/${now:%H.%M.%S}_${name}_${task_name}
   wandb_name_base: ${now:%Y.%m.%d-%H.%M.%S}_${name}_${task_name}
 
 hydra:
   job:
     override_dirname: ${name}
   run:
-    dir: data/outputs/${now:%Y.%m.%d}_${now:%H.%M.%S}_${name}_${task_name}
+    dir: data/outputs/real/${now:%Y.%m.%d}_${now:%H.%M.%S}_${name}_${task_name}
   sweep:
-    dir: data/outputs/${now:%Y.%m.%d}_${now:%H.%M.%S}_${name}_${task_name}
+    dir: data/outputs/real/${now:%Y.%m.%d}_${now:%H.%M.%S}_${name}_${task_name}
     subdir: ${hydra.job.num}

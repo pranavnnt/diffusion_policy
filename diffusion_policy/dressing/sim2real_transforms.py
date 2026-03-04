@@ -29,13 +29,13 @@ SIM_NOISE_STD = {
 }
 
 REAL_NOISE_STD = {
-    'rel_pos': np.array([0.05, 0.05], dtype=np.float32),
-    'vel': np.array([0.01, 0.01], dtype=np.float32),
-    'cloth_rel_pos_x': np.array([0.02, 0.02, 0.02, 0.02, 0.02], dtype=np.float32),
-    'cloth_rel_pos_z': np.array([0.05, 0.05], dtype=np.float32),
-    'cloth_spread': np.array([0.05], dtype=np.float32),
-    'hand_spread': np.array([0.02], dtype=np.float32),
-    'force_vec': np.array([0.1, 0.1, 0.1], dtype=np.float32),
+    'rel_pos': np.array([0.005, 0.002], dtype=np.float32),
+    'vel': np.array([0.001, 0.001], dtype=np.float32),
+    'cloth_rel_pos_x': np.array([0.002, 0.002, 0.002, 0.002, 0.0002], dtype=np.float32),
+    'cloth_rel_pos_z': np.array([0.005, 0.001], dtype=np.float32),
+    'cloth_spread': np.array([0.005], dtype=np.float32),
+    'hand_spread': np.array([0.002], dtype=np.float32),
+    'force_vec': np.array([0.01, 0.01, 0.01], dtype=np.float32),
     'visible_hand_ratio': np.array([0.02], dtype=np.float32),
 }
 

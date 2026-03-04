@@ -34,6 +34,6 @@ dataset:
     max_train_episodes: null
     sampling_weight: 1.0  # 100% real arm 1
     val_ratio: 0.1
-    upsampled: True
-    upsample_multiplier: 2
+    upsampled: False
+    upsample_multiplier: 1
     domain_encoding: [0, 1]
