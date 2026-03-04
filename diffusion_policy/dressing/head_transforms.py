@@ -61,16 +61,16 @@ def filter_head_obs(obs: np.ndarray) -> np.ndarray:
         arm1_rel_pos_y,
         arm1_rel_pos_z,
         individual_components['arm1_vel'],
-        # individual_components['arm1_force'],
+        individual_components['arm1_force'],
         arm2_rel_pos_x,
         arm2_rel_pos_y,
         arm2_rel_pos_z,
         individual_components['arm2_vel'],
-        # individual_components['arm2_force'],
-        coverage,
+        individual_components['arm2_force'],
+        # coverage,
         hull_centroid,
         hull_area], axis=1)
-    assert obs_filtered.shape[1] == 17, f"Expected filtered real obs to have 17 dimensions, got {obs_filtered.shape[1]}"
+    assert obs_filtered.shape[1] == 22, f"Expected filtered real obs to have 22 dimensions, got {obs_filtered.shape[1]}"
 
     return obs_filtered
 
@@ -84,7 +84,7 @@ def _generate_noise(timesteps: int, noise_std) -> np.ndarray:
     arm2_rel_pos_noise = np.random.normal(0, noise_std['rel_pos'], size=(timesteps, 3))
     arm2_vel_noise = np.random.normal(0, noise_std['vel'], size=(timesteps, 3))
     arm2_force_noise = np.random.normal(0, noise_std['force'], size=(timesteps, 3))
-    coverage_noise = np.random.normal(0, noise_std['coverage'], size=(timesteps, 1))
+    # coverage_noise = np.random.normal(0, noise_std['coverage'], size=(timesteps, 1))
     hull_centroid_noise = np.random.normal(0, noise_std['hull_centroid'], size=(timesteps, 3))
     hull_area_noise = np.random.normal(0, noise_std['hull_area'], size=(timesteps, 1))
 
@@ -93,16 +93,16 @@ def _generate_noise(timesteps: int, noise_std) -> np.ndarray:
     noise = np.concatenate([
         arm1_rel_pos_noise,
         arm1_vel_noise,
-        # arm1_force_noise,
+        arm1_force_noise,
         arm2_rel_pos_noise,
         arm2_vel_noise,
-        # arm2_force_noise,
-        coverage_noise,
+        arm2_force_noise,
+        # coverage_noise,
         hull_centroid_noise,
         hull_area_noise
     ], axis=1)
 
-    assert noise.shape == (timesteps, 17), f"Expected noise shape to be {(timesteps, 17)}, got {noise.shape}"
+    assert noise.shape == (timesteps, 22), f"Expected noise shape to be {(timesteps, 22)}, got {noise.shape}"
     
     return noise
 

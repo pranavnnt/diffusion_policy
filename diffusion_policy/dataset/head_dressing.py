@@ -443,8 +443,8 @@ class HeadDressingDataset(BaseLowdimDataset):
         # Actions are already filtered at load time
         obs_filtered = filter_head_obs(obs)
             
-        assert obs_filtered.shape[1] == 17, (
-            f"Expected obs dim 17 from {local_dataset_name}, got {obs_filtered.shape[1]}"
+        assert obs_filtered.shape[1] == 22, (
+            f"Expected obs dim 22 from {local_dataset_name}, got {obs_filtered.shape[1]}"
         )
 
         data = {
