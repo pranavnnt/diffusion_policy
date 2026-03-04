@@ -21,7 +21,7 @@ dataset:
   domain_encoding_dim: 2
   seed: 42
   zarr_configs:
-    - path: /home/dressing/workspace/bimanual_ws/src/bimanual_dressing/src/dressing_policies/demos/inference/real/head/Jan19-21-27_combined.zarr
+    - path: /home/dressing/workspace/bimanual_ws/src/bimanual_dressing/src/dressing_policies/demos/inference/real/head/Jan-to-Mar2_combined.zarr
       name: real
       max_train_episodes: null
       sampling_weight: 1.0
