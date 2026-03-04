@@ -10,8 +10,6 @@ from diffusion_policy.dataset.base_dataset import BaseLowdimDataset
 
 from diffusion_policy.dressing.sim2real_transforms import (
     filter_sim_obs,
-    scale_sim_obs,
-    scale_sim_action,
     add_noise
 )
 from diffusion_policy.dataset.util import fix_small_variance_normalizer
@@ -120,12 +118,9 @@ class DressingSimDataset(BaseLowdimDataset):
 
         act_trimmed = act[:, [0, 2]]
 
-        obs_scaled = scale_sim_obs(obs_filtered)
-        act_scaled = scale_sim_action(act_trimmed)
-
         data = {
-            'obs': obs_scaled,
-            'action': act_scaled,
+            'obs': obs_filtered,
+            'action': act_trimmed,
         }
 
         if self.use_domain_encoding:
