@@ -1,6 +1,6 @@
 name: head_dressing
 
-obs_dim: 23
+obs_dim: 17
 action_dim: 6
 keypoint_dim: 0
 obs_eef_target: False
