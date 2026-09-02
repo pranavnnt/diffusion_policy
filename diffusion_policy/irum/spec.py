@@ -201,6 +201,28 @@ def fast_limits_from_fraction(frac: float, act_scale: Sequence[float],
     return tuple(frac if i in keep else 0.0 for i in range(len(act_scale)))
 
 
+def fast_frac_from_demand(demand: Dict[str, Any], active: Sequence[int],
+                          lo: float = 0.02, hi: float = 0.5) -> float:
+    """A ceiling measured from the data instead of carried over from cap/drawer.
+
+    dap's numerator is a physical authority its *environment* declared.  Nothing
+    here declares one, so the next most defensible source is the correction the
+    demonstrations actually require: ``vs_chunk_mean`` p95 over the channels that
+    move, which is what a plan committing to one action per chunk would have to
+    be corrected by.
+
+    Deliberately the **larger** of the two demand measures.  Too loose costs
+    unused authority the ablation can take back; too tight clips on ordinary
+    motion, which looks like a policy that cannot track and is much harder to
+    read.  This is a hyperparameter set from training data, which is ordinary —
+    it is not selection, and the derived value is logged and stored in the spec.
+    """
+    p95 = demand.get("vs_chunk_mean", {}).get("p95")
+    if not p95 or not len(active):
+        return lo
+    return float(min(max(max(p95[i] for i in active), lo), hi))
+
+
 def from_resolution(res, cameras: Sequence[str] = (), **kw) -> IrumSpec:
     """Build a spec from what a dataset actually measured.
 

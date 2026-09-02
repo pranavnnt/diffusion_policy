@@ -506,3 +506,65 @@ def test_keep_grid_false_drops_the_snapshots(tmp_path):
     assert "grid_states" not in ck and ck["state_dict"]
     #: and it still loads
     SEL.load_selected(small, PL.build("B0", spec))
+
+
+# --------------------------------------------------------------------------- #
+# 9. bestval, offered rather than forbidden
+# --------------------------------------------------------------------------- #
+
+
+def _curve(vals, every=10):
+    return [{"epoch": (i + 1) * every, "val_loss": v} for i, v in enumerate(vals)]
+
+
+def test_bestval_picks_the_lowest_validation_epoch():
+    c = _curve([1.0, 0.4, 0.7, 0.9])
+    assert SEL.select_epochs([10, 20, 30, 40], "bestval", curve=c) == [20]
+
+
+def test_bestval_still_refuses_rollout_ranked_estimators():
+    with pytest.raises(ValueError, match="rollout success"):
+        SEL.select_epochs([10, 20], "best", curve=_curve([1.0, 0.5]))
+
+
+def test_selection_note_records_what_bestval_would_have_picked():
+    """The disagreement is data, not a matter of opinion, so it is always logged."""
+    spec = tiny_spec()
+    m = PL.build("B0", spec)
+    bank = SEL.SnapshotBank(4, every=1)
+    for ep, vl in zip((1, 2, 3, 4), (1.0, 0.4, 0.7, 0.9)):
+        bank.observe(m, ep, val_loss=vl)
+    note = SEL.selection_note(bank, "last2")
+    assert note["selected_epochs"] == [3, 4]
+    assert note["bestval_epoch"] == 2
+    assert note["agrees_with_bestval"] is False
+
+
+def test_a_rising_tail_is_flagged_because_last_k_assumes_a_plateau():
+    spec = tiny_spec()
+    m = PL.build("B0", spec)
+    bank = SEL.SnapshotBank(6, every=1)
+    for ep, vl in zip(range(1, 7), (1.0, 0.5, 0.3, 0.4, 0.6, 0.9)):
+        bank.observe(m, ep, val_loss=vl)
+    w = SEL.overfit_warning(bank)
+    assert w and "not a plateau" in w
+    assert "overfit_warning" in SEL.selection_note(bank, "last3")
+
+
+def test_a_flat_tail_is_not_flagged():
+    spec = tiny_spec()
+    m = PL.build("B0", spec)
+    bank = SEL.SnapshotBank(6, every=1)
+    for ep, vl in zip(range(1, 7), (1.0, 0.6, 0.41, 0.40, 0.40, 0.39)):
+        bank.observe(m, ep, val_loss=vl)
+    assert SEL.overfit_warning(bank) is None
+
+
+def test_auto_fast_frac_comes_from_the_measured_demand():
+    from diffusion_policy.irum.spec import fast_frac_from_demand
+    demand = {"vs_chunk_mean": {"p95": [0.01, 0.12, 0.30]}}
+    assert fast_frac_from_demand(demand, active=[1]) == pytest.approx(0.12)
+    #: channels that never move do not raise the ceiling
+    assert fast_frac_from_demand(demand, active=[0]) == pytest.approx(0.02)
+    #: and it is clamped rather than unbounded
+    assert fast_frac_from_demand(demand, active=[2], hi=0.2) == pytest.approx(0.2)

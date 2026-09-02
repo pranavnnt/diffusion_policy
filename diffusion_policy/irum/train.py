@@ -34,7 +34,8 @@ from diffusion_policy.irum.dataset import (ChunkNormaliser, load_split,
                                            action_residual_demand)
 from diffusion_policy.irum.spec import (IrumSpec, DRESSING_HORIZONS,
                                         DRESSING_CAMERAS,
-                                        fast_limits_from_fraction)
+                                        fast_limits_from_fraction,
+                                        fast_frac_from_demand)
 
 BATCH = 64
 LR_FLOW = 1e-4
@@ -504,7 +505,7 @@ def run(zarr_path: Any, out_dir: str, seed: int = 0,
         stages: Sequence[str] = STAGES, val_ratio: float = 0.2,
         cameras: Sequence[str] = DRESSING_CAMERAS, n_arms: int = 2,
         layout: Optional[F.PackedLayout] = None,
-        fast_frac: Optional[float] = None,
+        fast_frac: Any = "auto",
         require: Sequence[str] = (),
         estimator: str = f"last{SEL.LAST_K}", keep_grid: bool = True,
         log: Callable[[str], None] = print) -> Dict[str, Any]:
@@ -522,23 +523,6 @@ def run(zarr_path: Any, out_dir: str, seed: int = 0,
         zarr_path, cameras=cameras, n_arms=n_arms, layout=layout,
         val_ratio=val_ratio, seed=seed, require=require,
         spec_kw=dict(**DRESSING_HORIZONS))
-    if fast_frac is not None:
-        #: Only channels the demonstrations actually move get authority.  A
-        #: ceiling on a channel that is identically zero in the data is
-        #: authority over something the corrector can never have learned, and
-        #: it is free to write there at rollout; a zero ceiling makes the
-        #: channel structurally silent instead.
-        act = eps.action_report(spec.act_channels)
-        spec = IrumSpec(**{**spec.to_dict(),
-                           "fast_limits": fast_limits_from_fraction(
-                               fast_frac, spec.act_scale or
-                               tuple([1.0] * spec.act_dim),
-                               active=act["active"])})
-        if not any(spec.fast_limits):
-            raise ValueError(
-                "no action channel is ever nonzero in this dataset, so every "
-                "ceiling is 0 and the corrector cannot write anything; B1 and "
-                "D2 would train a no-op. Check the recording.")
 
     res = eps.resolution
     log(f"[fields] usable: {', '.join(res.usable) or '(none)'}")
@@ -557,6 +541,31 @@ def run(zarr_path: Any, out_dir: str, seed: int = 0,
         log(f"[data] action channels never nonzero: {act['dead']} "
             f"(active: {act['active']})")
     demand = action_residual_demand(tr, spec)
+
+    if fast_frac is not None:
+        if fast_frac == "auto":
+            fast_frac = fast_frac_from_demand(demand, act["active"])
+            log(f"[authority] --fast-frac auto -> {fast_frac:.3f} of full "
+                f"command, from the p95 correction the demonstrations require")
+        #: Only channels the demonstrations actually move get authority.  A
+        #: ceiling on a channel that is identically zero in the data is
+        #: authority over something the corrector can never have learned, and
+        #: it is free to write there at rollout; a zero ceiling makes the
+        #: channel structurally silent instead.
+        spec = IrumSpec(**{**spec.to_dict(),
+                           "fast_limits": fast_limits_from_fraction(
+                               float(fast_frac), spec.act_scale or
+                               tuple([1.0] * spec.act_dim),
+                               active=act["active"])})
+        summary_frac = float(fast_frac)
+        if not any(spec.fast_limits):
+            raise ValueError(
+                "no action channel is ever nonzero in this dataset, so every "
+                "ceiling is 0 and the corrector cannot write anything; B1 and "
+                "D2 would train a no-op. Check the recording.")
+    else:
+        summary_frac = None
+
     if demand:
         for i in act["active"]:
             log(f"[authority] ch{i} residual demand (fraction of full command): "
@@ -583,7 +592,7 @@ def run(zarr_path: Any, out_dir: str, seed: int = 0,
                    "notes": [{"arm": s.arm, "field": s.name, "note": s.note}
                              for s in res.statuses if s.note]},
         "action_channels": act,
-        "residual_demand": demand,
+        "residual_demand": demand, "fast_frac": summary_frac,
         "dt": getattr(eps, "dt_stats", None),
         "normaliser": norm.state_dict()}
 
@@ -612,6 +621,14 @@ def run(zarr_path: Any, out_dir: str, seed: int = 0,
             extra={k: v for k, v in r.items() if k != "bank"})
         out = {k: v for k, v in r.items() if k != "bank"}
         out["selection"] = sel
+        msg = (f"      {stage} {estimator} -> epochs {sel['selected_epochs']}")
+        if "bestval_epoch" in sel:
+            agree = "same" if sel["agrees_with_bestval"] else "DIFFERS"
+            msg += (f"; lowest val_loss was epoch {sel['bestval_epoch']} "
+                    f"({agree})")
+        log(msg)
+        if "overfit_warning" in sel:
+            log(f"      WARNING {sel['overfit_warning']}")
         return out
 
     if "B0" in stages:
@@ -676,19 +693,23 @@ def main(argv=None) -> int:
     ap.add_argument("--epochs-b1", type=int, default=40)
     ap.add_argument("--epochs-d2", type=int, default=40)
     ap.add_argument("--estimator", default=f"last{SEL.LAST_K}",
+                    choices=list(SEL.ESTIMATORS),
                     help="which grid epochs the saved checkpoint averages: "
-                         "last3 (default), last5, last1 (final snapshot only). "
-                         "Score-ranked estimators are refused — there is no "
-                         "rollout to rank with.")
+                         "last3 (default), last5, last1 (final snapshot), or "
+                         "bestval (lowest validation loss — the ordinary "
+                         "choice, at the cost of selection noise). Whichever "
+                         "you pick, the run reports what bestval would have "
+                         "chosen so the disagreement is visible.")
     ap.add_argument("--no-keep-grid", action="store_true",
                     help="do not store the epoch grid in the checkpoint; saves "
                          "disk, but the selection can no longer be re-derived")
-    ap.add_argument("--fast-frac", type=float, default=None,
+    ap.add_argument("--fast-frac", default="auto",
                     help="the fast level's authority as a fraction of full "
-                         "command (LIN_SCALE 0.02 m/s, ANG_SCALE 0.05 rad/s); "
-                         "required for B1 and D2. Channels the data never moves "
-                         "get 0. dap's own arms sit at 0.016 (cap) and 0.16 "
-                         "(drawer) of full command.")
+                         "command (LIN_SCALE 0.02 m/s, ANG_SCALE 0.05 rad/s). "
+                         "'auto' (default) derives it from the correction the "
+                         "demonstrations require; pass a number to override. "
+                         "Channels the data never moves get 0. dap's own arms "
+                         "sit at 0.016 (cap) and 0.16 (drawer).")
     a = ap.parse_args(argv)
     out = a.out or os.path.join(
         "data", "outputs", "irum_" + time.strftime("%Y%m%d_%H%M%S"))
@@ -703,7 +724,9 @@ def main(argv=None) -> int:
         device=a.device,
         stages=tuple(a.stages.split(",")), val_ratio=a.val_ratio,
         cameras=tuple(c for c in a.cameras.split(",") if c),
-        n_arms=a.n_arms, layout=LAYOUTS[a.layout], fast_frac=a.fast_frac,
+        n_arms=a.n_arms, layout=LAYOUTS[a.layout],
+        fast_frac=(a.fast_frac if a.fast_frac == "auto"
+                   else float(a.fast_frac)),
         require=tuple(r for r in a.require.split(",") if r),
         estimator=a.estimator, keep_grid=not a.no_keep_grid, epochs=ep)
     return 0

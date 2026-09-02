@@ -89,7 +89,7 @@ import torch
 #: plateau starts differs by seed and is not knowable in advance.
 SNAPSHOT_EVERY = 10
 LAST_K = 3
-ESTIMATORS = ("last3", "last5", "all")
+ESTIMATORS = ("last3", "last5", "last1", "bestval", "all")
 #: Nothing here ranks by a score; recorded so a checkpoint says so on its face.
 SELECTION_RULE = "offline_last_k"
 
@@ -168,23 +168,68 @@ class SnapshotBank:
                               "action_mse_used_for_selection": False}}
 
 
-def select_epochs(epochs: Sequence[int], estimator: str = f"last{LAST_K}"
-                  ) -> List[int]:
+def select_epochs(epochs: Sequence[int], estimator: str = f"last{LAST_K}",
+                  curve: Optional[Sequence[Dict[str, Any]]] = None,
+                  key: str = "val_loss") -> List[int]:
     """Which grid epochs an estimator reports.
 
-    ``last-k`` and ``all`` rank nothing, which is precisely why they survive the
-    absence of a rollout.  A score-ranked estimator raises rather than silently
-    falling back — a run that cannot rank should say so, not quietly report
-    something else.
+    ``last-k`` and ``all`` rank nothing, which is why they survive the absence of
+    a rollout.
+
+    ``bestval`` is the ordinary thing — restore the epoch with the lowest
+    validation loss — and it is offered rather than forbidden, because the case
+    against it is quantitative, not a matter of principle, and it is the case
+    the rest of this repository follows.  What it costs is **selection noise**:
+    an argmin over a grid of noisy estimates is biased low and, on a plateau,
+    picks largely at random within it.  dap measured the epoch-to-epoch spread
+    at 0.011-0.040 success with the grid maximum carrying +0.023-0.041 of upward
+    bias, and found last-3 the better estimator of rollout success.  With a
+    validation set of two or three episodes that noise is larger here, not
+    smaller.
+
+    The honest summary: on a plateau the two agree to within the noise and
+    ``last-k`` has lower variance; off a plateau ``last-k`` is averaging a tail
+    that should not be averaged, and validation loss is the thing that tells you
+    so.  Use :func:`overfit_warning` to find out which case you are in rather
+    than assuming.
+
+    A rollout-ranked estimator still raises — that one is unavailable, not merely
+    discouraged.
     """
     eps = sorted(int(e) for e in epochs)
     if estimator == "all":
         return eps
     if estimator.startswith("last"):
         return eps[-int(estimator[4:] or LAST_K):]
+    if estimator == "bestval":
+        if not curve:
+            raise ValueError("bestval needs the training curve")
+        scored = [(r[key], int(r["epoch"])) for r in curve
+                  if key in r and int(r["epoch"]) in set(eps)]
+        if not scored:
+            raise ValueError(f"no grid epoch carries {key!r}")
+        return [min(scored)[1]]
     raise ValueError(
         f"estimator {estimator!r} ranks checkpoints by rollout success, which "
         f"is unavailable without an EnvRunner; use one of {ESTIMATORS}")
+
+
+def overfit_warning(bank: "SnapshotBank", key: str = "val_loss",
+                    n: int = 5) -> Optional[str]:
+    """Whether the tail ``last-k`` averages is still going the wrong way.
+
+    ``last-k`` assumes a plateau.  A validation loss **rising** across the final
+    grid points means the run is past its useful budget, the tail is not a
+    plateau, and averaging it averages the overfitting.  That is the one
+    situation where validation loss should override the estimator — not by
+    selecting the argmin, but by telling you the budget was wrong.
+    """
+    s = tail_slope(bank.curve, key, n=n, grid=bank.grid)
+    if s is None or s <= 0:
+        return None
+    return (f"{key} is rising at {s:+.5f} per 10 epochs over the last {n} grid "
+            f"points: the tail is not a plateau, so averaging it averages the "
+            f"overfitting. Shorten the budget rather than switching estimator.")
 
 
 def average_states(bank: SnapshotBank, epochs: Sequence[int]
@@ -250,12 +295,24 @@ def selection_note(bank: SnapshotBank, estimator: str = f"last{LAST_K}",
     kept and clearly marked unused, so the number the old protocol *would* have
     picked stays visible on the record next to the one that was.
     """
-    eps = select_epochs(sorted(bank.states), estimator)
+    eps = select_epochs(sorted(bank.states), estimator, curve=bank.curve)
     note: Dict[str, Any] = {
         "rule": SELECTION_RULE, "estimator": estimator,
         "selected_epochs": eps, "grid": list(bank.grid),
         "rollout_available": False,
     }
+    #: What the ordinary selector would have picked, recorded next to what was,
+    #: so the disagreement is visible every run instead of being a matter of
+    #: opinion.
+    try:
+        note["bestval_epoch"] = select_epochs(
+            sorted(bank.states), "bestval", curve=bank.curve)[0]
+        note["agrees_with_bestval"] = note["bestval_epoch"] in eps
+    except ValueError:
+        pass
+    w = overfit_warning(bank)
+    if w:
+        note["overfit_warning"] = w
     for key in diagnostics:
         vals = [(r[key], r["epoch"]) for r in bank.curve if key in r]
         if not vals:
@@ -281,7 +338,7 @@ def save_selected(path: str, bank: SnapshotBank, variant: str, spec_dict: Dict[s
     models — at the cost of being unable to re-derive the selection later, which
     is the one thing keeping the grid buys.
     """
-    eps = select_epochs(sorted(bank.states), estimator)
+    eps = select_epochs(sorted(bank.states), estimator, curve=bank.curve)
     payload = {
         "variant": variant,
         "spec": spec_dict,

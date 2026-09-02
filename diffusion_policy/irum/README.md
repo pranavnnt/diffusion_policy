@@ -35,7 +35,7 @@ conda activate maniskill3          # this machine has no `robodiff` env
 cd ~/diffusion_policy
 
 # plumbing check: every stage, tiny budgets, output under data/outputs/
-python -m diffusion_policy.irum.train --data <path> --quick --fast-frac 0.15
+python -m diffusion_policy.irum.train --data <path> --quick
 
 # a real run
 python -m diffusion_policy.irum.train --data <path> --fast-frac 0.15 \
@@ -62,17 +62,17 @@ The other flags worth knowing:
 
 | flag | default | |
 |---|---|---|
-| `--fast-frac` | — | the fast level's authority as a fraction of full command; **required** for `B1`/`D2` |
+| `--fast-frac` | `auto` | the fast level's authority as a fraction of full command; `auto` derives it from the correction the demonstrations require |
 | `--layout` | `smoke` | packed-state layout. `none` expects one array per field |
 | `--n-arms` | 2 | how many arms to look for; dead ones are dropped |
 | `--require` | — | e.g. `wrench` — refuse a dataset without a contact signal |
 | `--stages` | all | `dyn,B0,B1,D2`; a stage cannot start without its parent |
 | `--val-ratio` | 0.2 | held-out **episodes**, stratified by store |
-| `--estimator` | `last3` | `last3` / `last5` / `last1`; score-ranked estimators are refused |
+| `--estimator` | `last3` | `last3` / `last5` / `last1` / `bestval`; rollout-ranked estimators are refused |
 | `--no-keep-grid` | off | drop the epoch grid from the checkpoint to save disk |
 | `--epochs-{dyn,b0,b1,d2}` | 100/60/40/40 | fixed in advance, never tuned on the result |
 
-`pytest tests/test_irum.py` runs the invariants — 36 of them, no data or GPU
+`pytest tests/test_irum.py` runs the invariants — 42 of them, no data or GPU
 needed.
 
 ## What changed in the port, and why
@@ -134,10 +134,41 @@ Two quantities are logged every epoch and **neither is a selector**:
 * `action_mse` — offline MSE of the *executed prefix* against the demonstrated
   action, i.e. the closest offline stand-in for what the robot receives.
 
-`action_mse` is the tempting selector and is not used as one: dap measured
+`action_mse` is the tempting selector and is not the default: dap measured
 offline loss ordering these variants across a 3 % spread against a 0.44 spread
 in success — it barely orders them, and a selector that does not order has
 variance exceeding the effect it is choosing between.
+
+### Why not just select on validation loss?
+
+It is on offer — `--estimator bestval` — because the case against it is
+quantitative rather than a matter of principle, and it is what the rest of this
+repository does.
+
+What it costs is **selection noise**. An argmin over a grid of noisy estimates
+is biased low and, on a plateau, picks close to at random within it. dap measured
+the epoch-to-epoch spread at 0.011–0.040 success with the grid maximum carrying
++0.023–0.041 of upward bias, and found last-3 the better estimator of rollout
+success. With a validation set of two or three episodes, that noise is larger
+here, not smaller. Weight averaging over the tail reduces it.
+
+The honest summary is that the two disagree less than the argument suggests: **on
+a plateau they agree to within the noise and `last-k` has lower variance; off a
+plateau `last-k` is averaging a tail that should not be averaged, and validation
+loss is exactly what tells you so.** So validation earns its keep by deciding
+whether the tail is trustworthy, not by picking the epoch — `selection.tail_slope`
+and `overfit_warning` do that, and a rising validation loss across the final grid
+points is reported as "shorten the budget", not "switch estimator".
+
+Every run logs what `bestval` would have chosen next to what was chosen, so the
+disagreement is visible as data rather than assumed:
+
+```
+B0 last3 -> epochs [40, 50, 60]; lowest val_loss was epoch 30 (DIFFERS)
+```
+
+If they routinely differ by a lot, that is evidence the run has not plateaued —
+look at the budget before the estimator.
 
 What `last-k` assumes is that the run has plateaued. `selection.tail_slope`
 computes the slope of the last five grid points so the assumption is checked
