@@ -654,7 +654,11 @@ def main(argv=None) -> int:
     ap.add_argument("--data", "--zarr", dest="data", required=True,
                     help="a .zarr store, a directory containing several, or a "
                          "comma-separated list of either")
-    ap.add_argument("--out", required=True)
+    ap.add_argument("--out", default=None,
+                    help="run directory; defaults to "
+                         "data/outputs/irum_<timestamp>")
+    ap.add_argument("--quick", action="store_true",
+                    help="short budgets for a plumbing check, not a result")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--device", default="cuda:0" if torch.cuda.is_available() else "cpu")
     ap.add_argument("--stages", default=",".join(STAGES))
@@ -686,15 +690,22 @@ def main(argv=None) -> int:
                          "get 0. dap's own arms sit at 0.016 (cap) and 0.16 "
                          "(drawer) of full command.")
     a = ap.parse_args(argv)
-    run([p for p in a.data.split(",") if p], a.out, seed=a.seed,
+    out = a.out or os.path.join(
+        "data", "outputs", "irum_" + time.strftime("%Y%m%d_%H%M%S"))
+    ep = {"dyn": a.epochs_dyn, "B0": a.epochs_b0,
+          "B1": a.epochs_b1, "D2": a.epochs_d2}
+    if a.quick:
+        #: Enough to exercise every stage and the exact-null check; far too few
+        #: to mean anything, which is the point of a separate flag rather than a
+        #: quietly small default.
+        ep = {"dyn": 10, "B0": 6, "B1": 4, "D2": 4}
+    run([p for p in a.data.split(",") if p], out, seed=a.seed,
         device=a.device,
         stages=tuple(a.stages.split(",")), val_ratio=a.val_ratio,
         cameras=tuple(c for c in a.cameras.split(",") if c),
         n_arms=a.n_arms, layout=LAYOUTS[a.layout], fast_frac=a.fast_frac,
         require=tuple(r for r in a.require.split(",") if r),
-        estimator=a.estimator, keep_grid=not a.no_keep_grid,
-        epochs={"dyn": a.epochs_dyn, "B0": a.epochs_b0,
-                "B1": a.epochs_b1, "D2": a.epochs_d2})
+        estimator=a.estimator, keep_grid=not a.no_keep_grid, epochs=ep)
     return 0
 
 

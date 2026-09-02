@@ -31,11 +31,17 @@ only version of the check that means anything.
 ## Running it
 
 ```bash
-# one store, a directory of stores, or a comma-separated list
-python -m diffusion_policy.irum.train \
-  --data ~/dressing_policies/demo_for_testing/image_trials_4.zarr \
-  --out data/outputs/irum_smoke \
-  --device cuda:0 --fast-frac 0.15
+conda activate maniskill3          # this machine has no `robodiff` env
+cd ~/diffusion_policy
+
+# plumbing check: every stage, tiny budgets, output under data/outputs/
+python -m diffusion_policy.irum.train --data <path> --quick --fast-frac 0.15
+
+# a real run
+python -m diffusion_policy.irum.train --data <path> --fast-frac 0.15 \
+  --out data/outputs/irum_v1
+
+pytest tests/test_irum.py          # 36 invariants, no data or GPU needed
 ```
 
 **Where the data path goes: `--data`.** Point it at a directory and every

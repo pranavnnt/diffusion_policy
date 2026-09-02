@@ -50,9 +50,8 @@ constant. `spec.limits()` deliberately raises rather than inventing a fast-level
 authority.
 
 ```bash
-python -m diffusion_policy.irum.train \
-  --data ~/dressing_policies/demo_for_testing/image_trials_4.zarr \
-  --out data/outputs/irum_smoke --device cuda:0 --fast-frac 0.15
+conda activate maniskill3 && cd ~/diffusion_policy
+python -m diffusion_policy.irum.train --data <path> --quick --fast-frac 0.15
 ```
 
 `--data` takes a `.zarr` store, a directory of them, or a comma-separated list.
@@ -131,13 +130,10 @@ There is **no `robodiff` conda env on this machine** despite what
 2.10 + zarr + torchvision and is what the IRUM smoke test runs under. It does
 not have this repo installed, so prefix the path:
 
-```bash
-PYTHONPATH=~/diffusion_policy ~/miniconda3/envs/maniskill3/bin/python -m ...
-```
-
-Run scripts with that interpreter directly — `conda run -n maniskill3` has been
-observed to kill long jobs (exit 137) where the same command run directly
-succeeds.
+Run from the repo root, where `python -m` puts the local package first on
+`sys.path` — no `PYTHONPATH` needed. Avoid `conda run -n maniskill3`, which has
+been observed to kill long jobs (exit 137) where the same command run after
+`conda activate` succeeds.
 
 `HYDRA_FULL_ERROR=1` when debugging config/instantiation failures. Outputs go to
 `data/outputs/<name>_<task_name>.<hydra.job.num>_<timestamp>/`; wandb project
