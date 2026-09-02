@@ -1,0 +1,242 @@
+"""Dimensions, horizons and windows for one IRUM run.
+
+The dap benchmarks (`cap_constraint_benchmark`, `drawer_constraint_benchmark`)
+bake their dimensions into module-level constants — ``OBS_DIM = 59``,
+``MESSAGE_WINDOW = 32`` — because each of them is one frozen task.  Porting the
+method here means those numbers become inputs: the dressing rig publishes a
+28-dim state and a 12-dim action, the sim publishes a 37-dim state and 2-3 dim
+action, and neither is the cap layout.
+
+Everything that was a constant over there is a field here, and every field is
+recorded in the checkpoint, so a rollout cannot silently feed a policy the stack
+it was not trained on.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field, asdict
+from typing import Any, Dict, Optional, Sequence, Tuple
+
+import numpy as np
+
+
+@dataclass(frozen=True)
+class IrumSpec:
+    """One task's shape contract.
+
+    ``wrench_dim`` may be 0.  The dap stacks always carried a wrench because
+    both of their environments published a force/torque reading; the real
+    dressing rig publishes joint positions and an end-effector pose and nothing
+    else, so the channel is genuinely absent rather than merely unused.  Keeping
+    it as a width rather than deleting the argument is what lets a force-equipped
+    dataset — the dressing sim, which has ``force`` at ``state[7:11]``, or a
+    future real rig with an F/T sensor — drop in without touching the models.
+    """
+
+    #: proprioceptive channels the slow *and* fast levels read
+    prop_dim: int
+    #: action width
+    act_dim: int
+    #: force/torque channels, 0 when the rig publishes none
+    wrench_dim: int = 0
+    #: camera keys; empty means a state-only track
+    cameras: Tuple[str, ...] = ()
+    image_shape: Tuple[int, int, int] = (3, 240, 320)
+    crop_shape: Tuple[int, int] = (216, 288)
+
+    #: chunk the slow level predicts
+    pred_horizon: int = 8
+    #: prefix of that chunk the environment actually receives
+    exec_horizon: int = 4
+    #: slow frames stacked as context, as offsets from the decision step
+    slow_offsets: Tuple[int, int] = (-1, 0)
+
+    #: causal window the upward message reads, in control steps
+    message_window: int = 8
+    message_dim: int = 16
+    #: per-channel ceiling on the fast correction, in normalized action units
+    fast_limits: Optional[Tuple[float, ...]] = None
+    #: Action channels the policy commands, as indices into the recorded action.
+    #: Empty means "all of them".  The rig records 6 channels per arm whether or
+    #: not that arm is live, and asking a policy to command an arm its
+    #: observation does not cover is worse than not commanding it: the channel
+    #: cannot be predicted from anything visible, so it becomes noise the flow
+    #: field spends capacity fitting.
+    act_channels: Tuple[int, ...] = ()
+    #: Command scale per action channel in physical units (m/s, rad/s), used to
+    #: normalise actions to [-1, 1] and to express the fast level's authority as
+    #: a fraction of full command.  ``None`` falls back to the observed range,
+    #: which on a small dataset is not the command range.
+    act_scale: Optional[Tuple[float, ...]] = None
+
+    #: width of the learned visual latent per camera (resnet18 after global pool)
+    vision_dim: int = 512
+
+    #: Which declared fields (``irum.fields.ARM_FIELDS``) the widths above were
+    #: built from, and over how many arms.  Recorded so a checkpoint cannot be
+    #: loaded against a dataset that measured a different set: the widths can
+    #: match by coincidence while the channels mean different things.
+    #: Empty means the spec was built by hand rather than resolved from data.
+    n_arms: int = 1
+    #: 0-based indices of the arms the state vector covers, in order
+    arm_ids: Tuple[int, ...] = ()
+    prop_fields: Tuple[str, ...] = ()
+    wrench_fields: Tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        assert self.pred_horizon >= self.exec_horizon > 0
+        assert self.message_window > 0
+        assert len(self.slow_offsets) == 2 and self.slow_offsets[1] == 0
+        if self.fast_limits is not None:
+            assert len(self.fast_limits) == self.act_dim, (
+                f"{len(self.fast_limits)} ceilings for {self.act_dim} channels")
+            assert all(v >= 0 for v in self.fast_limits)
+        if self.act_scale is not None:
+            assert len(self.act_scale) == self.act_dim, (
+                f"{len(self.act_scale)} scales for {self.act_dim} channels")
+            assert all(v > 0 for v in self.act_scale)
+
+    # -- derived widths ----------------------------------------------------
+
+    @property
+    def n_obs_steps(self) -> int:
+        return len(self.slow_offsets)
+
+    @property
+    def frame_dim(self) -> int:
+        """Width of one slow frame: visual latents + proprioception + wrench."""
+        return (self.vision_dim * len(self.cameras) + self.prop_dim
+                + self.wrench_dim)
+
+    @property
+    def context_dim(self) -> int:
+        return self.frame_dim * self.n_obs_steps
+
+    @property
+    def is_image(self) -> bool:
+        return len(self.cameras) > 0
+
+    def limits(self) -> np.ndarray:
+        """The fast level's per-channel authority.
+
+        ``fast_limits=None`` is not a default authority — it is a refusal to
+        invent one.  dap derives cap's ceiling from ``fast_v09``'s declared
+        reflex influence and drawer's from its scripted 8 mm reaction; both are
+        numbers the *environment* published, and neither transfers to a
+        different robot.  A run on new hardware has to state its own.
+        """
+        if self.fast_limits is None:
+            raise ValueError(
+                "fast_limits is unset: the corrector's authority must come from "
+                "the rig's own declared reflex ceiling, expressed in normalized "
+                "action units, not from a default carried over from cap/drawer")
+        return np.asarray(self.fast_limits, dtype=np.float32)
+
+    def assert_schema(self, other: "IrumSpec") -> None:
+        """Refuse a spec whose channels are not the ones these weights saw.
+
+        Width equality is not enough.  Dropping ``gripper_pos`` and
+        ``gripper_vel`` (1+1) while gaining nothing else keeps every tensor
+        shape valid and silently shifts every channel after them, which loads
+        without complaint and scores wrongly.
+        """
+        if not self.prop_fields or not other.prop_fields:
+            return                      # hand-built spec; nothing to compare
+        assert (self.arm_ids, self.prop_fields, self.wrench_fields) == (
+            other.arm_ids, other.prop_fields, other.wrench_fields), (
+            f"field mismatch: checkpoint saw {other.n_arms}x"
+            f"{other.prop_fields}+{other.wrench_fields}, this dataset offers "
+            f"{self.n_arms}x{self.prop_fields}+{self.wrench_fields}")
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> "IrumSpec":
+        d = dict(d)
+        for k in ("cameras", "image_shape", "crop_shape", "slow_offsets",
+                  "prop_fields", "wrench_fields", "arm_ids", "act_channels",
+                  "act_scale"):
+            if k in d and d[k] is not None:
+                d[k] = tuple(d[k])
+        if d.get("fast_limits") is not None:
+            d["fast_limits"] = tuple(float(v) for v in d["fast_limits"])
+        return cls(**d)
+
+
+#: The teleop's full-deflection command, per arm: 3 linear m/s then 3 angular
+#: rad/s.  From ``dressing_policies/data_collection/single_joystick_teleop.py``
+#: (``LIN_SCALE``, ``ANG_SCALE``) — the rig's own declaration of what one unit of
+#: action means, which is what makes a ceiling expressed as a fraction of it
+#: mean something.
+ARM_ACT_SCALE: Tuple[float, ...] = (0.02, 0.02, 0.02, 0.05, 0.05, 0.05)
+ACT_PER_ARM: int = len(ARM_ACT_SCALE)
+
+
+def arm_act_channels(arm_ids: Sequence[int], per_arm: int = ACT_PER_ARM
+                     ) -> Tuple[int, ...]:
+    """The recorded action channels belonging to the given arms."""
+    return tuple(a * per_arm + c for a in arm_ids for c in range(per_arm))
+
+
+def fast_limits_from_fraction(frac: float, act_scale: Sequence[float],
+                              active: Sequence[int] = ()) -> Tuple[float, ...]:
+    """Ceilings as a fraction of full command authority.
+
+    This is dap's construction with the numerator left to the caller.  Cap
+    computes ``MAX_TRANS_INFLUENCE_M / D`` — the displacement its environment
+    declares the optional reflex may cause, divided by the displacement one unit
+    of action delivers — and drawer computes ``8 mm / 0.05 = 0.16`` the same way.
+    Both are "physical authority / action scale"; only the numerator is
+    task-specific, and neither of theirs transfers to a different robot.
+
+    Because actions here are already normalised by ``act_scale``, one normalised
+    unit *is* full command, so the ratio reduces to ``frac`` directly.
+    ``active`` names the channels the corrector may write; every other channel
+    gets 0, which :class:`~diffusion_policy.irum.nets.FastCorrector` makes
+    structurally silent rather than merely discouraged.
+    """
+    assert 0.0 <= frac <= 1.0, f"a fraction of full command, got {frac}"
+    keep = set(active) if len(active) else set(range(len(act_scale)))
+    return tuple(frac if i in keep else 0.0 for i in range(len(act_scale)))
+
+
+def from_resolution(res, cameras: Sequence[str] = (), **kw) -> IrumSpec:
+    """Build a spec from what a dataset actually measured.
+
+    The widths are a consequence of the resolution, never an argument: a spec
+    whose ``prop_dim`` disagreed with the arrays it is fed would fail deep inside
+    the observation encoder, where the shape error names a matmul rather than a
+    missing sensor.
+    """
+    from diffusion_policy.irum import fields as F
+
+    prop = res.prop_names()
+    wrench = res.wrench_names()
+    chans = kw.pop("act_channels", None)
+    if chans is None:
+        chans = arm_act_channels(res.arms)
+    scale = kw.pop("act_scale", None)
+    if scale is None:
+        scale = tuple(ARM_ACT_SCALE[c % ACT_PER_ARM] for c in chans)
+    kw.pop("act_dim", None)          # a consequence of the channels, not an input
+    return IrumSpec(
+        prop_dim=res.width(prop), wrench_dim=res.width(wrench),
+        act_dim=len(chans), act_channels=tuple(chans), act_scale=tuple(scale),
+        n_arms=res.n_arms, arm_ids=tuple(res.arms),
+        prop_fields=prop, wrench_fields=wrench,
+        cameras=tuple(cameras), **kw)
+
+
+#: Defaults for the dressing rig, independent of which fields a given recording
+#: happens to carry.
+#:
+#: ``pred8/exec4`` rather than dap's ``pred16/exec8``, and ``message_window=8``
+#: rather than its 32, because the rig runs at ~6 Hz: at cap's horizons a chunk
+#: would span several seconds of a manoeuvre that lasts a few.
+DRESSING_HORIZONS: Dict[str, Any] = dict(
+    pred_horizon=8, exec_horizon=4, message_window=8,
+    image_shape=(3, 240, 320), crop_shape=(216, 288),
+)
+
+DRESSING_CAMERAS: Tuple[str, ...] = ("image_arm1", "image_bed_front")
