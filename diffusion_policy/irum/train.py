@@ -20,7 +20,9 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 import time
+import warnings
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
@@ -52,6 +54,35 @@ W_ACTION = 1.0
 NOISE_SEED = 909
 
 STAGES = ("dyn", "B0", "B1", "D2")
+
+
+def _tee(out_dir: str, also: Callable[[str], None] = print
+         ) -> Callable[[str], None]:
+    """Log to the console and to ``<out_dir>/train.log``.
+
+    Line-buffered and opened in append mode, so a run that is killed still
+    leaves everything it had printed — which is when the log is most wanted.
+    Warnings are routed here too: the field report and the control-rate warning
+    are the two things worth reading afterwards, and they arrive through
+    ``warnings``, not through this function.
+    """
+    path = os.path.join(out_dir, "train.log")
+    fh = open(path, "a", buffering=1)
+    fh.write(f"\n=== {time.strftime('%Y-%m-%d %H:%M:%S')} "
+             f"{' '.join(sys.argv)}\n")
+
+    def log(msg: str = "") -> None:
+        also(msg)
+        fh.write(str(msg) + "\n")
+
+    def _showwarning(message, category, filename, lineno, file=None, line=None):
+        fh.write(f"WARNING {category.__name__}: {message}\n")
+        _prev(message, category, filename, lineno, file, line)
+
+    _prev = warnings.showwarning
+    warnings.showwarning = _showwarning
+    log.path = path
+    return log
 
 
 def _batches(n, size, rng):
@@ -518,6 +549,9 @@ def run(zarr_path: Any, out_dir: str, seed: int = 0,
             f"stage {child} nests on {parent}, which is not in {list(stages)}")
     epochs = {"dyn": 100, "B0": 60, "B1": 40, "D2": 40, **(epochs or {})}
     os.makedirs(out_dir, exist_ok=True)
+    if log is print:
+        log = _tee(out_dir)
+    log(f"[out]  {os.path.abspath(out_dir)}")
     log(f"[data] {zarr_path}")
     tr, va, norm, eps, spec = load_split(
         zarr_path, cameras=cameras, n_arms=n_arms, layout=layout,
@@ -621,6 +655,10 @@ def run(zarr_path: Any, out_dir: str, seed: int = 0,
             extra={k: v for k, v in r.items() if k != "bank"})
         out = {k: v for k, v in r.items() if k != "bank"}
         out["selection"] = sel
+        #: The per-epoch curve also travels inside the checkpoint, but a
+        #: checkpoint is 100+ MB and a plot should not require loading one.
+        out["curve"] = r["bank"].curve
+        out["snapshot_epochs"] = list(r["bank"].grid)
         msg = (f"      {stage} {estimator} -> epochs {sel['selected_epochs']}")
         if "bestval_epoch" in sel:
             agree = "same" if sel["agrees_with_bestval"] else "DIFFERS"
@@ -658,7 +696,8 @@ def run(zarr_path: Any, out_dir: str, seed: int = 0,
     path = os.path.join(out_dir, f"summary_seed{seed}.json")
     with open(path, "w") as fh:
         json.dump(summary, fh, indent=2, default=str)
-    log(f"[done] {path}")
+    log(f"[done] summary  {path}")
+    log(f"[done] log      {os.path.join(out_dir, 'train.log')}")
     return summary
 
 

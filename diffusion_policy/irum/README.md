@@ -44,6 +44,22 @@ python -m diffusion_policy.irum.train --data <path> --fast-frac 0.15 \
 pytest tests/test_irum.py          # 36 invariants, no data or GPU needed
 ```
 
+### Where the output goes
+
+Everything from a run lands in one directory — `--out`, or
+`data/outputs/irum_<timestamp>` relative to the working directory if you do not
+pass one. The last two lines of every run print the path.
+
+| file | |
+|---|---|
+| `train.log` | the full console output, **including the warnings** — the field report, the control-rate report and the "no held-out episode" notice arrive through `warnings` and are captured here too. Appended and line-buffered, so a killed run keeps what it had |
+| `summary_seed0.json` | everything structured: the resolved spec, which fields were usable and which were missing and why, the dt statistics, the residual demand and the derived `fast_frac`, and **per-epoch curves** for every stage |
+| `B0_seed0.pt` … | the selected checkpoint per stage, with the epoch grid it was averaged from (`--no-keep-grid` drops the grid) |
+| `dynamics_seed0.pt` | the delta dynamics feeding D2's message |
+
+The per-epoch curve is in the JSON as well as in the checkpoint, so plotting a
+run does not mean loading a 100+ MB `.pt`.
+
 **Where the data path goes: `--data`.** Point it at a directory and every
 `*.zarr` store inside is loaded, sorted by name, episodes concatenated:
 
