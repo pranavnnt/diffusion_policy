@@ -223,7 +223,9 @@ def fast_frac_from_demand(demand: Dict[str, Any], active: Sequence[int],
     return float(min(max(max(p95[i] for i in active), lo), hi))
 
 
-def from_resolution(res, cameras: Sequence[str] = (), **kw) -> IrumSpec:
+def from_resolution(res, cameras: Sequence[str] = (),
+                    act_width: Optional[int] = None,
+                    n_declared: Optional[int] = None, **kw) -> IrumSpec:
     """Build a spec from what a dataset actually measured.
 
     The widths are a consequence of the resolution, never an argument: a spec
@@ -236,15 +238,34 @@ def from_resolution(res, cameras: Sequence[str] = (), **kw) -> IrumSpec:
     prop = res.prop_names()
     wrench = res.wrench_names()
     chans = kw.pop("act_channels", None)
+    #: How many action channels belong to one arm is a property of the
+    #: recording, not a constant: the bimanual teleop writes 6 per arm, the
+    #: single-arm zigzag script writes 3 in total.  Deriving it from the
+    #: recorded width is what lets one spec serve both; assuming 6 indexes past
+    #: the end of a 3-wide action.
+    per_arm = ACT_PER_ARM
+    if act_width is not None and n_declared:
+        if act_width % n_declared == 0:
+            per_arm = act_width // n_declared
+        else:
+            per_arm = act_width          # not divisible: treat as one block
     if chans is None:
-        chans = arm_act_channels(res.arms)
+        chans = arm_act_channels(res.arms, per_arm)
+        if act_width is not None:
+            chans = tuple(c for c in chans if c < act_width)
     scale = kw.pop("act_scale", None)
-    if scale is None:
+    if scale is None and per_arm == ACT_PER_ARM:
+        #: ``ARM_ACT_SCALE`` describes one specific action layout — 3 linear
+        #: m/s then 3 angular rad/s. Applying it to an action of a different
+        #: width, or to a position target rather than a velocity command, would
+        #: put a wrong constant where a measured one belongs, so anything else
+        #: falls back to the observed range and says so.
         scale = tuple(ARM_ACT_SCALE[c % ACT_PER_ARM] for c in chans)
     kw.pop("act_dim", None)          # a consequence of the channels, not an input
     return IrumSpec(
         prop_dim=res.width(prop), wrench_dim=res.width(wrench),
-        act_dim=len(chans), act_channels=tuple(chans), act_scale=tuple(scale),
+        act_dim=len(chans), act_channels=tuple(chans),
+        act_scale=(tuple(scale) if scale is not None else None),
         n_arms=res.n_arms, arm_ids=tuple(res.arms),
         prop_fields=prop, wrench_fields=wrench,
         cameras=tuple(cameras), **kw)

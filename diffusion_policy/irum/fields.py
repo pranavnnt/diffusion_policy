@@ -49,24 +49,38 @@ class Field:
     aliases: Tuple[str, ...] = ()
     #: what degrades when this field is absent, in one line, shown in the warning
     needed_for: str = ""
+    #: fields carrying the same physical quantity in another form.  When two of
+    #: them resolve, the one declared **earlier** in :data:`ARM_FIELDS` wins and
+    #: the other is dropped with a note — keeping both would count the same
+    #: measurement twice and quietly widen the state vector.
+    conflicts: Tuple[str, ...] = ()
 
 
 #: The baseline the collector is being extended to record, per arm.  Order is
 #: the concatenation order of the state vector and is part of the contract:
 #: changing it invalidates every existing checkpoint.
 ARM_FIELDS: Tuple[Field, ...] = (
-    Field("q", 7, "linear", "prop", ("joint", "joint_pos", "joint_positions"),
+    Field("q", 7, "linear", "prop",
+          ("joint", "joint_pos", "joint_position", "joint_positions"),
           "the slow policy's basic configuration input"),
-    Field("dq", 7, "linear", "prop", ("joint_vel", "joint_velocities"),
+    Field("dq", 7, "linear", "prop",
+          ("joint_vel", "joint_velocity", "joint_velocities"),
           "the corrector's only view of how fast the arm is already moving"),
     Field("ee_pos", 3, "linear", "prop", ("eef_pos", "ee_position"),
           "the slow policy's task-space position"),
     Field("ee_quat", 4, "quat", "prop", ("eef_quat", "ee_rot", "ee_orientation"),
           "task-space orientation, and the rotation relating the wrench frames"),
     Field("ee_lin_vel", 3, "linear", "prop", ("eef_lin_vel", "ee_linear_velocity"),
-          "task-space velocity the corrector reacts to"),
+          "task-space velocity the corrector reacts to",
+          conflicts=("ee_twist",)),
     Field("ee_ang_vel", 3, "linear", "prop", ("eef_ang_vel", "ee_angular_velocity"),
-          "task-space angular velocity"),
+          "task-space angular velocity", conflicts=("ee_twist",)),
+    #: The same six numbers as ``ee_lin_vel`` + ``ee_ang_vel``, as one array.
+    #: Declared after them so that a dataset carrying both keeps the split pair
+    #: and drops this; a dataset carrying only this keeps it.
+    Field("ee_twist", 6, "linear", "prop", ("eef_twist",),
+          "task-space linear and angular velocity, as one array",
+          conflicts=("ee_lin_vel", "ee_ang_vel")),
     Field("gripper_pos", 1, "linear", "prop", ("gripper_position",),
           "whether the cloth is still held; a slip is invisible without it"),
     Field("gripper_vel", 1, "linear", "prop", ("gripper_velocity",),
@@ -77,10 +91,24 @@ ARM_FIELDS: Tuple[Field, ...] = (
     Field("wrench", 6, "linear", "wrench",
           ("wrench_ee_base", "wrench_base", "wrench_ee_ee", "wrench_ee"),
           "the fast corrector's contact signal, and the physical content of "
-          "D2's surprise channel; without it S is a kinematic tracking error"),
+          "D2's surprise channel; without it S is a kinematic tracking error",
+          conflicts=("ee_force",)),
+    #: Force without torque.  Half a wrench, and the half that carries most of
+    #: the contact signal for dressing — but a policy cannot see a moment about
+    #: the end-effector with it, so it is the fallback, not the target.
+    Field("ee_force", 3, "linear", "wrench", ("force", "ee_force_base"),
+          "the contact signal, when the full 6-D wrench is not recorded",
+          conflicts=("wrench",)),
 )
 
 FIELDS_BY_NAME: Dict[str, Field] = {f.name: f for f in ARM_FIELDS}
+_ORDER: Dict[str, int] = {f.name: i for i, f in enumerate(ARM_FIELDS)}
+
+
+def _order(name: str) -> int:
+    return _ORDER[name]
+
+
 PROP_FIELDS: Tuple[str, ...] = tuple(f.name for f in ARM_FIELDS if f.group == "prop")
 WRENCH_FIELDS: Tuple[str, ...] = tuple(f.name for f in ARM_FIELDS if f.group == "wrench")
 
@@ -276,8 +304,23 @@ def resolve(source: Dict[str, Any], n_arms: int = 2,
     dead = [arm_name(a) for a in range(n_arms) if a not in live]
     usable = tuple(f.name for f in ARM_FIELDS
                    if all(f"{arm_name(a)}_{f.name}" in arrays for a in live))
+    dropped_dupes: List[Tuple[str, str]] = []
+    for f in ARM_FIELDS:
+        if f.name not in usable:
+            continue
+        for other in f.conflicts:
+            #: schema order decides; only a *later* field yields to an earlier one
+            if other in usable and _order(other) < _order(f.name):
+                usable = tuple(n for n in usable if n != f.name)
+                dropped_dupes.append((f.name, other))
+                break
     arrays = {k: v for k, v in arrays.items() if k.split("_", 1)[1] in usable}
     res = Resolution(arrays=arrays, statuses=statuses, arms=live, usable=usable)
+    if dropped_dupes and warn:
+        warnings.warn(
+            "dropped as duplicates of a field already present: "
+            + ", ".join(f"{a} (same quantity as {b})" for a, b in dropped_dupes),
+            stacklevel=3)
     if dead and warn:
         warnings.warn(
             f"{', '.join(dead)} carries no usable field and is dropped; the "

@@ -155,6 +155,8 @@ class IrumEpisodes:
                  require: Sequence[str] = (), warn: bool = True):
         self.zarr_paths = discover_zarrs(zarr_path)
         self.cameras = tuple(cameras)
+        self.n_declared = int(n_arms)
+        self.action_key = action_key
 
         #: Resolve every store separately, then keep only what **all** of them
         #: agree on.  Two recordings that measured different fields cannot be
@@ -440,13 +442,24 @@ def episode_split(n_episodes: int, val_ratio: float = 0.2, seed: int = 42,
 def load_split(zarr_path: str, cameras: Sequence[str] = (), n_arms: int = 2,
                layout: Optional[F.PackedLayout] = None, val_ratio: float = 0.2,
                seed: int = 42, require: Sequence[str] = (),
-               spec_kw: Optional[Dict[str, Any]] = None, **kw
+               spec_kw: Optional[Dict[str, Any]] = None, warn_scale: bool = True,
+               **kw
                ) -> Tuple[Dict[str, np.ndarray], Dict[str, np.ndarray],
                           ChunkNormaliser, "IrumEpisodes", IrumSpec]:
     """Resolve the dataset, derive the spec from it, and cut it into chunks."""
     eps = IrumEpisodes(zarr_path, cameras=cameras, n_arms=n_arms, layout=layout,
                        require=require, **kw)
-    spec = from_resolution(eps.resolution, cameras=cameras, **(spec_kw or {}))
+    spec = from_resolution(eps.resolution, cameras=cameras,
+                           act_width=eps.episodes[0]["action"].shape[-1],
+                           n_declared=eps.n_declared, **(spec_kw or {}))
+    if spec.act_scale is None and warn_scale:
+        warnings.warn(
+            f"actions are {spec.act_dim}-wide, which is not the 3-linear + "
+            f"3-angular layout the declared command scale describes, so they "
+            f"are normalised by their observed range instead. A ceiling "
+            f"expressed as a fraction of that is a fraction of *this dataset's* "
+            f"range, not of full command, and is not comparable across "
+            f"recordings.", stacklevel=2)
     n_rec = eps.episodes[0]["action"].shape[-1]
     if len(spec.act_channels) < n_rec:
         dropped = [c for c in range(n_rec) if c not in spec.act_channels]

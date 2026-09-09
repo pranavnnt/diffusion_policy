@@ -537,7 +537,7 @@ def run(zarr_path: Any, out_dir: str, seed: int = 0,
         cameras: Sequence[str] = DRESSING_CAMERAS, n_arms: int = 2,
         layout: Optional[F.PackedLayout] = None,
         fast_frac: Any = "auto",
-        require: Sequence[str] = (),
+        require: Sequence[str] = (), action_key: str = "action",
         estimator: str = f"last{SEL.LAST_K}", keep_grid: bool = True,
         log: Callable[[str], None] = print) -> Dict[str, Any]:
     unknown = [s for s in stages if s not in STAGES]
@@ -556,7 +556,7 @@ def run(zarr_path: Any, out_dir: str, seed: int = 0,
     tr, va, norm, eps, spec = load_split(
         zarr_path, cameras=cameras, n_arms=n_arms, layout=layout,
         val_ratio=val_ratio, seed=seed, require=require,
-        spec_kw=dict(**DRESSING_HORIZONS))
+        action_key=action_key, spec_kw=dict(**DRESSING_HORIZONS))
 
     res = eps.resolution
     log(f"[fields] usable: {', '.join(res.usable) or '(none)'}")
@@ -724,6 +724,10 @@ def main(argv=None) -> int:
                     help="comma-separated zarr keys; empty for a state-only run")
     ap.add_argument("--layout", default="smoke", choices=sorted(LAYOUTS),
                     help="packed-state layout; 'none' expects one array per field")
+    ap.add_argument("--action-key", default="action",
+                    help="which recorded array is the action the policy "
+                         "predicts (e.g. zigzag_action for the scripted "
+                         "commanded velocity)")
     ap.add_argument("--require", default="",
                     help="comma-separated fields that must resolve, e.g. "
                          "'wrench' to refuse a dataset without a contact signal")
@@ -767,7 +771,7 @@ def main(argv=None) -> int:
         fast_frac=(a.fast_frac if a.fast_frac == "auto"
                    else float(a.fast_frac)),
         require=tuple(r for r in a.require.split(",") if r),
-        estimator=a.estimator, keep_grid=not a.no_keep_grid, epochs=ep)
+        action_key=a.action_key, estimator=a.estimator, keep_grid=not a.no_keep_grid, epochs=ep)
     return 0
 
 

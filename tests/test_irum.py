@@ -290,8 +290,8 @@ def test_absent_fields_are_excluded_not_zero_filled():
     assert res.wrench_names() == ()
     assert res.width(res.prop_names()) == 2 * 14      # not 2 * full schema width
     assert {s.name for s in res.missing()} == {
-        "dq", "ee_lin_vel", "ee_ang_vel", "gripper_pos", "gripper_vel",
-        "tau_J", "wrench"}
+        "dq", "ee_lin_vel", "ee_ang_vel", "ee_twist", "gripper_pos",
+        "gripper_vel", "tau_J", "wrench", "ee_force"}
 
 
 def test_missing_fields_warn():
@@ -568,3 +568,64 @@ def test_auto_fast_frac_comes_from_the_measured_demand():
     assert fast_frac_from_demand(demand, active=[0]) == pytest.approx(0.02)
     #: and it is clamped rather than unbounded
     assert fast_frac_from_demand(demand, active=[2], hi=0.2) == pytest.approx(0.2)
+
+
+# --------------------------------------------------------------------------- #
+# 10. alternative spellings of the same quantity
+# --------------------------------------------------------------------------- #
+
+
+def test_singular_collector_names_resolve():
+    """The zigzag collector writes joint_position / joint_velocity, not plural."""
+    src = _packed_source()
+    src["joint_position"] = np.zeros((6, 7), np.float32) + 0.5
+    src["joint_velocity"] = np.zeros((6, 7), np.float32) + 0.5
+    res = FL.resolve(src, n_arms=1, layout=FL.SMOKE_LAYOUT, warn=False)
+    assert "q" in res.usable and "dq" in res.usable
+
+
+def test_ee_twist_is_used_when_the_split_pair_is_absent():
+    src = _packed_source()
+    src["arm1_ee_twist"] = np.ones((6, 6), np.float32)
+    src["arm2_ee_twist"] = np.ones((6, 6), np.float32)
+    res = FL.resolve(src, n_arms=2, layout=FL.SMOKE_LAYOUT, warn=False)
+    assert "ee_twist" in res.usable
+    assert "ee_lin_vel" not in res.usable
+
+
+def test_the_split_pair_wins_over_ee_twist_when_both_are_present():
+    """Same six numbers twice would silently widen the state vector."""
+    src = _packed_source()
+    for a in ("arm1", "arm2"):
+        src[f"{a}_ee_twist"] = np.ones((6, 6), np.float32)
+        src[f"{a}_ee_lin_vel"] = np.ones((6, 3), np.float32)
+        src[f"{a}_ee_ang_vel"] = np.ones((6, 3), np.float32)
+    with pytest.warns(UserWarning, match="dropped as duplicates"):
+        res = FL.resolve(src, n_arms=2, layout=FL.SMOKE_LAYOUT)
+    assert "ee_lin_vel" in res.usable and "ee_ang_vel" in res.usable
+    assert "ee_twist" not in res.usable
+
+
+def test_ee_force_is_the_fallback_for_a_missing_wrench():
+    src = _packed_source()
+    for a in ("arm1", "arm2"):
+        src[f"{a}_ee_force"] = np.ones((6, 3), np.float32)
+    res = FL.resolve(src, n_arms=2, layout=FL.SMOKE_LAYOUT, warn=False)
+    assert res.wrench_names() == ("ee_force",)
+    #: and the full wrench supersedes it when both exist
+    for a in ("arm1", "arm2"):
+        src[f"{a}_wrench"] = np.ones((6, 6), np.float32)
+    res = FL.resolve(src, n_arms=2, layout=FL.SMOKE_LAYOUT, warn=False)
+    assert res.wrench_names() == ("wrench",)
+
+
+def test_action_width_comes_from_the_recording_not_a_constant():
+    """A 3-wide single-arm action must not be indexed as 6 channels per arm."""
+    from diffusion_policy.irum.spec import from_resolution
+    res = FL.resolve(_packed_source(arm2_live=False), n_arms=2,
+                     layout=FL.SMOKE_LAYOUT, warn=False)
+    spec = from_resolution(res, act_width=3, n_declared=1)
+    assert spec.act_channels == (0, 1, 2) and spec.act_dim == 3
+    #: and an action that is not the 3-linear/3-angular layout gets no declared
+    #: scale, so it falls back to the observed range rather than a wrong constant
+    assert spec.act_scale is None
