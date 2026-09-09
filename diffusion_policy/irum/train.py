@@ -28,6 +28,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 import numpy as np
 import torch
 
+from diffusion_policy.irum import diagnose as DG
 from diffusion_policy.irum import dynamics as DY
 from diffusion_policy.irum import policy as PL
 from diffusion_policy.irum import selection as SEL
@@ -541,6 +542,7 @@ def run(zarr_path: Any, out_dir: str, seed: int = 0,
         require: Sequence[str] = (), action_key: str = "action",
         image_size: Optional[Tuple[int, int]] = (240, 320),
         estimator: str = f"last{SEL.LAST_K}", keep_grid: bool = True,
+        diagnose: bool = True, diag_steps: int = 32, diag_starts: int = 48,
         log: Callable[[str], None] = print) -> Dict[str, Any]:
     unknown = [s for s in stages if s not in STAGES]
     assert not unknown, f"unknown stage(s) {unknown}; have {STAGES}"
@@ -549,7 +551,14 @@ def run(zarr_path: Any, out_dir: str, seed: int = 0,
     for child, parent in (("B1", "B0"), ("D2", "B1"), ("D2", "dyn")):
         assert not (child in stages and parent not in stages), (
             f"stage {child} nests on {parent}, which is not in {list(stages)}")
-    epochs = {"dyn": 100, "B0": 60, "B1": 40, "D2": 40, **(epochs or {})}
+    #: ``dyn`` is short on purpose.  Swept on the 0909 recordings, held-out
+    #: skill against the no-change baseline runs +67.5 / +68.5 / +65.3 / +57.6 /
+    #: +40.1 % at 10 / 30 / 60 / 100 / 200 epochs — monotonically worse past ~30.
+    #: It is the one stage with no snapshot grid and no early stopping, so a long
+    #: budget is not merely wasted, it is spent: the last weights are the ones
+    #: that feed D2's message, and dap lost a round to a dynamics that was worse
+    #: than doing nothing.
+    epochs = {"dyn": 30, "B0": 60, "B1": 40, "D2": 40, **(epochs or {})}
     os.makedirs(out_dir, exist_ok=True)
     if log is print:
         log = _tee(out_dir)
@@ -699,6 +708,56 @@ def run(zarr_path: Any, out_dir: str, seed: int = 0,
             f"{null['max_abs_diff']:.3e}  {'PASS' if null['passed'] else 'FAIL'}")
         summary["D2"] = {**_save("D2", r), "exact_null": null}
 
+    #: Everything below runs on the *trained* models and never feeds back into
+    #: them: it is what to read before the policy reaches the robot, not another
+    #: selector.
+    if diagnose and frozen is not None and models:
+        log("[stage] diagnostics")
+        last = models.get("D2") or models.get("B1") or models.get("B0")
+        mods = F.modalities(res, spec.dyn_fields)
+        va_eps = sorted({int(i) for i in va["episode_index"]})
+        diag: Dict[str, Any] = {}
+        try:
+            diag["divergence"] = DG.divergence(
+                last, frozen, mods, eps, norm, spec, va_eps, device=device,
+                n_steps=diag_steps, n_starts=diag_starts, seed=seed)
+            roll = DG.rollout(last, frozen, mods, eps, norm, spec, va_eps,
+                              diag_steps, diag_starts, device, seed)
+            diag["surprise_shift"] = DG.surprise_shift(
+                frozen, mods, eps, norm, spec, roll.get("rolled_states"),
+                va_eps, device=device)
+        except Exception as exc:                       # pragma: no cover
+            log(f"      diagnostics failed: {type(exc).__name__}: {exc}")
+            diag["error"] = f"{type(exc).__name__}: {exc}"
+        if "D2" in models:
+            b = _batch(t_va, slice(0, min(32, len(va["target"]))), device)
+            diag["message_reliance"] = DG.message_reliance(
+                models["D2"], b, _message)
+        summary["diagnostics"] = diag
+        d = diag.get("divergence") or {}
+        for k, v in (d.get("at") or {}).items():
+            log(f"      divergence {k:8s} policy {v['policy_median']:.3f}  "
+                f"replay {v['replay_median']:.3f}  gap {v['gap_median']:+.3f}")
+        if "compounding_factor" in d:
+            log(f"      compounding x{d['compounding_factor']:.1f} over "
+                f"{d['n_steps']} steps; action divergence "
+                f"{d['action_divergence_median']:.3f}")
+        sh = diag.get("surprise_shift") or {}
+        if "p99_ratio" in sh:
+            log(f"      surprise p99 x{sh['p99_ratio']:.2f}, clip rate x"
+                f"{sh['clip_rate_ratio']:.1f}  (demonstration -> rolled)")
+        mr = diag.get("message_reliance") or {}
+        if mr:
+            log(f"      message reliance: relative shift "
+                f"{mr['relative_shift']:.3f} (reliance, not value)")
+
+    verdicts = DG.detectors(summary)
+    if verdicts:
+        log("[verdict]")
+        for v in verdicts:
+            log(f"      {v}")
+        summary["verdicts"] = verdicts
+
     path = os.path.join(out_dir, f"summary_seed{seed}.json")
     with open(path, "w") as fh:
         json.dump(summary, fh, indent=2, default=str)
@@ -742,10 +801,16 @@ def main(argv=None) -> int:
     ap.add_argument("--require", default="",
                     help="comma-separated fields that must resolve, e.g. "
                          "'wrench' to refuse a dataset without a contact signal")
-    ap.add_argument("--epochs-dyn", type=int, default=100)
+    ap.add_argument("--epochs-dyn", type=int, default=30)
     ap.add_argument("--epochs-b0", type=int, default=60)
     ap.add_argument("--epochs-b1", type=int, default=40)
     ap.add_argument("--epochs-d2", type=int, default=40)
+    ap.add_argument("--no-diagnose", action="store_true",
+                    help="skip the pre-deployment diagnostics (trajectory "
+                         "divergence through the dynamics, surprise shift, "
+                         "message reliance)")
+    ap.add_argument("--diag-steps", type=int, default=32)
+    ap.add_argument("--diag-starts", type=int, default=48)
     ap.add_argument("--estimator", default=f"last{SEL.LAST_K}",
                     choices=list(SEL.ESTIMATORS),
                     help="which grid epochs the saved checkpoint averages: "
@@ -785,7 +850,9 @@ def main(argv=None) -> int:
         action_key=a.action_key,
         image_size=(None if a.image_size == "native"
                     else tuple(int(v) for v in a.image_size.lower().split("x"))),
-        estimator=a.estimator, keep_grid=not a.no_keep_grid, epochs=ep)
+        estimator=a.estimator, keep_grid=not a.no_keep_grid, epochs=ep,
+        diagnose=not a.no_diagnose, diag_steps=a.diag_steps,
+        diag_starts=a.diag_starts)
     return 0
 
 

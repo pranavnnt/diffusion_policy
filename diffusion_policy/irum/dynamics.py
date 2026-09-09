@@ -110,6 +110,42 @@ def _torch_quat_rel_rotvec(q0: torch.Tensor, q1: torch.Tensor) -> torch.Tensor:
     return torch.where(n > 1e-9, v / n.clamp_min(1e-9) * ang, torch.zeros_like(v))
 
 
+def _torch_quat_apply_rotvec(q0: torch.Tensor, rv: torch.Tensor) -> torch.Tensor:
+    """Rotate ``q0`` by the rotation vector ``rv`` — the inverse of the delta.
+
+    Needed to *advance* a state by a predicted delta, which the forward direction
+    (:func:`torch_state_delta`) never has to do.  Without it a rolled-out
+    trajectory would have to add rotation vectors to quaternions componentwise,
+    which is not a rotation at all.
+    """
+    ang = rv.norm(dim=-1, keepdim=True)
+    axis = rv / ang.clamp_min(1e-9)
+    half = 0.5 * ang
+    w1 = torch.cos(half)
+    v1 = torch.where(ang > 1e-9, axis * torch.sin(half), torch.zeros_like(rv))
+    w0, v0 = q0[..., :1], q0[..., 1:]
+    # q = q_rel * q0
+    w = w1 * w0 - (v1 * v0).sum(-1, keepdim=True)
+    v = w1 * v0 + w0 * v1 + torch.cross(v1, v0, dim=-1)
+    q = torch.cat([w, v], dim=-1)
+    return q / q.norm(dim=-1, keepdim=True).clamp_min(1e-9)
+
+
+def torch_apply_delta(y: torch.Tensor, d: torch.Tensor,
+                      mods: Sequence[Modality]) -> torch.Tensor:
+    """``y_next`` from a state and a **raw** (unnormalised) delta."""
+    out = y.clone()
+    off = 0
+    for _, (lo, hi), w, kind in mods:
+        part = d[..., off:off + w]
+        if kind == "quat":
+            out[..., lo:hi] = _torch_quat_apply_rotvec(y[..., lo:hi], part)
+        else:
+            out[..., lo:hi] = y[..., lo:hi] + part
+        off += w
+    return out
+
+
 def state_delta(y0: np.ndarray, y1: np.ndarray,
                 mods: Sequence[Modality]) -> np.ndarray:
     parts = []

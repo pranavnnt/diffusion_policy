@@ -350,6 +350,65 @@ the same structural guarantee the message's exact-null route has. Without it the
 corrector holds authority over axes no data ever constrained, and is free to
 write there at rollout.
 
+## Before it reaches the robot
+
+`diagnose.py`, run at the end of training unless `--no-diagnose`. Two different
+questions, deliberately not mixed.
+
+### Does error compound? (`divergence`)
+
+Single-step action MSE cannot answer that: it is measured at demonstration
+states, and what breaks a behaviour-cloned policy is visiting its own. So the
+policy is rolled forward **through the learned dynamics** — replanning every
+`exec_horizon` steps as it would on the robot, with the fast level correcting
+against the *rolled* proprioception — and the rolled state is compared with the
+demonstration.
+
+```
+divergence step1    policy 0.702  replay 0.705  gap -0.004
+divergence step8    policy 2.241  replay 2.200  gap +0.041
+divergence step24   policy 3.433  replay 3.328  gap +0.105
+compounding x4.9 over 24 steps
+```
+
+Two honesty requirements, enforced in code rather than left to the reader:
+
+* **`replay` is the floor.** The same rollout driven by the *demonstrated*
+  actions. Whatever it diverges by is the dynamics model's own error, not the
+  policy's. Only the gap above it is evidence about the policy — without this
+  row a bad model and a bad policy look identical.
+* **Vision is teacher-forced.** The dynamics models low-dimensional state, not
+  pixels, so each replan sees the demonstration's frames. Real drift would move
+  the images too, so every number here is **optimistic**.
+
+### Is anything broken? (`detectors`)
+
+None of these predicts success. Each catches a specific way a dap round went
+wrong, and the run prints them as verdicts:
+
+```
+OK   dynamics skill +67.5% vs no-change baseline
+WARN corrector saturation 0.0%  <-- never reaches its ceiling; authority unused
+OK   exact-null identity (max |D2(m=0) - B1| = 0.0e+00)
+WARN surprise p99 shift x28.9  <-- D2 conditions on values it never saw in training
+OK   state divergence grows x4.9 over 24 steps
+```
+
+`surprise_shift` is dap's most expensive lesson measured here: `S` is fitted on
+demonstration transitions and read at states the policy visits. On drawer its
+p99 went 2.66 → 7.07 and its clip rate up 213x. `message_reliance` is reported
+as **reliance, not value** — zeroing an input the model trained with is out of
+distribution, and dap measured 99 % reliance on a message worth *negative*
+success.
+
+### What offline metrics cannot do
+
+Predict how well it will work. dap's own note: *"offline loss barely orders these
+variants (a 3 % spread against a 0.44 spread in success)"*. The dynamic range of
+the proxy is a fifteenth of the thing being predicted, and there is a documented
+case where an offline probe pointed the opposite way. These are failure
+detectors; ranking arms still needs rollouts.
+
 ## Open decisions — read before trusting a number
 
 **1. The authority fraction is not chosen.** See above: the recipe is settled,

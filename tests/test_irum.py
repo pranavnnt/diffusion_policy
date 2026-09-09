@@ -645,3 +645,48 @@ def test_short_episodes_are_named_and_excluded():
 
     spec = tiny_spec(pred_horizon=8)
     assert short_episodes(_Eps([2, 100, 7, 8]), spec) == [0, 2]
+
+
+# --------------------------------------------------------------------------- #
+# 11. pre-deployment diagnostics
+# --------------------------------------------------------------------------- #
+
+
+def test_apply_delta_inverts_state_delta():
+    """Rolling a trajectory forward needs the inverse of the delta map.
+
+    Quaternions are the reason this is not just addition: the delta of a rotation
+    is a rotation vector, so advancing composes rather than adds.
+    """
+    from diffusion_policy.irum import dynamics as D
+    mods = [("p", (0, 3), 3, "linear"), ("q", (3, 7), 3, "quat")]
+    g = torch.Generator().manual_seed(0)
+    y0 = torch.randn(5, 7, generator=g); y0[:, 3:] /= y0[:, 3:].norm(dim=-1, keepdim=True)
+    y1 = torch.randn(5, 7, generator=g); y1[:, 3:] /= y1[:, 3:].norm(dim=-1, keepdim=True)
+    back = D.torch_apply_delta(y0, D.torch_state_delta(y0, y1, mods), mods)
+    assert torch.allclose(back[:, :3], y1[:, :3], atol=1e-5)
+    #: q and -q are the same rotation, so compare up to sign
+    err = torch.minimum((back[:, 3:] - y1[:, 3:]).abs().max(1).values,
+                        (back[:, 3:] + y1[:, 3:]).abs().max(1).values)
+    assert float(err.max()) < 1e-5
+
+
+def test_detectors_flag_a_dynamics_worse_than_doing_nothing():
+    from diffusion_policy.irum import diagnose as DG
+    v = DG.detectors({"dyn": {"skill": -1.55}})
+    assert v and v[0].startswith("FAIL")
+    assert "model error" in v[0]
+    assert DG.detectors({"dyn": {"skill": 0.4}})[0].startswith("OK")
+
+
+def test_detectors_flag_both_ends_of_the_authority_range():
+    from diffusion_policy.irum import diagnose as DG
+    assert "authority unused" in DG.detectors({"B1": {"saturation": 0.0}})[0]
+    assert "too small" in DG.detectors({"B1": {"saturation": 0.9}})[0]
+    assert DG.detectors({"B1": {"saturation": 0.1}})[0].startswith("OK")
+
+
+def test_detectors_flag_a_surprise_that_shifts_out_of_distribution():
+    from diffusion_policy.irum import diagnose as DG
+    v = DG.detectors({"diagnostics": {"surprise_shift": {"p99_ratio": 28.9}}})
+    assert v[0].startswith("WARN") and "never saw in training" in v[0]
