@@ -83,6 +83,24 @@ class IrumSpec:
     prop_fields: Tuple[str, ...] = ()
     wrench_fields: Tuple[str, ...] = ()
 
+    @property
+    def dyn_fields(self) -> Tuple[str, ...]:
+        """What the delta dynamics models, and so what its surprise can be about.
+
+        Proprioception **and** the contact channels.  Splitting them is right for
+        the policy's inputs — the corrector needs a per-step wrench of its own —
+        but wrong for the dynamics: cap's model predicts the wrench along with
+        everything else, and a surprise computed over a state that excludes force
+        cannot say "it pushed back harder than expected", only "the arm did not
+        go where the command implied".  For dressing that is the difference
+        between a contact signal and a tracking error.
+        """
+        return tuple(self.prop_fields) + tuple(self.wrench_fields)
+
+    @property
+    def dyn_dim(self) -> int:
+        return self.prop_dim + self.wrench_dim
+
     def __post_init__(self) -> None:
         assert self.pred_horizon >= self.exec_horizon > 0
         assert self.message_window > 0
@@ -274,11 +292,20 @@ def from_resolution(res, cameras: Sequence[str] = (),
 #: Defaults for the dressing rig, independent of which fields a given recording
 #: happens to carry.
 #:
-#: ``pred8/exec4`` rather than dap's ``pred16/exec8``, and ``message_window=8``
-#: rather than its 32, because the rig runs at ~6 Hz: at cap's horizons a chunk
-#: would span several seconds of a manoeuvre that lasts a few.
+#: Sized for the rig's measured 14.3 Hz (the 0909 recordings hold that to within
+#: 0.079 s, so a step is a fixed duration rather than a hope).
+#:
+#: ``pred16/exec8`` is cap's, and at this rate it means predicting 1.1 s and
+#: executing 0.56 s.  The earlier ``pred8/exec4`` was chosen when the recordings
+#: ran at a jittery ~6 Hz, where 16 steps would have spanned most of a manoeuvre.
+#:
+#: ``message_window=32`` is 2.24 s, chosen to cover **one full zigzag cycle**:
+#: the commanded velocity flips sign every 14 steps in these recordings, so a
+#: 28-step cycle plus margin is the shortest window in which the message can see
+#: a whole period of the motion rather than half of one.  A half-cycle window
+#: would make the message's content depend on which half it landed in.
 DRESSING_HORIZONS: Dict[str, Any] = dict(
-    pred_horizon=8, exec_horizon=4, message_window=8,
+    pred_horizon=16, exec_horizon=8, message_window=32,
     image_shape=(3, 240, 320), crop_shape=(216, 288),
 )
 

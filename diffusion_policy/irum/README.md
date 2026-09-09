@@ -102,7 +102,7 @@ Everything that was a constant there is a field of `IrumSpec` here.
 | wrench always present | `wrench_dim` may be **0** | the real rig has no force channel at all (see below) |
 | fixed 128-step episodes cut into 16 fixed chunks | sliding decision step, stride `exec_horizon` | demonstrations are whatever length the operator recorded |
 | fixed 32-step **event** window anchored to a scripted event | **rolling** causal window, `msg_valid` where it fits | a teleop episode has no such anchor, and 32 > the whole episode |
-| `pred16 / exec8` | `pred8 / exec4` for the real spec | a 16-step chunk leaves almost no decision steps in a 25-step episode |
+| `pred16 / exec8`, 32-step message window | same, once the rig held a fixed 14.3 Hz | the earlier `pred8/exec4` + 8-step window was sized for a jittery ~6 Hz recording |
 | rank the epoch grid by rollout success | **`last-k`**, which ranks nothing | there is no `EnvRunner`; see below |
 | `MAX_RESIDUAL` derived from the env's declared reflex | `fast_limits`, no default | no number from cap or drawer transfers to this robot |
 
@@ -264,6 +264,39 @@ identical to a healthy field: a channel that is identically zero, and a
 quaternion whose norm is not 1 (a disconnected arm is recorded as `zeros(14)`,
 so its "quaternion" is not a rotation at all). An arm with **nothing** usable is
 dropped whole rather than deleting its fields from the live arm.
+
+## Horizons
+
+Sized for the rig's measured **14.3 Hz** — the 0909 recordings hold that to
+within 0.079 s, so a step is a fixed duration rather than a hope.
+
+* `pred_horizon=16` / `exec_horizon=8` — cap's, and at this rate 1.1 s predicted
+  and 0.56 s executed.
+* `message_window=32` = 2.24 s, chosen to cover **one full zigzag cycle**: the
+  commanded velocity flips sign every 14 steps in these recordings, so 28 steps
+  plus margin is the shortest window in which the message sees a whole period
+  rather than half of one. A half-cycle window would make the message's content
+  depend on which half it happened to land in.
+
+The earlier `pred8/exec4` with an 8-step window was sized for the smoke
+recording's jittery ~6 Hz, where 16 steps would have spanned most of a
+manoeuvre.
+
+## What the dynamics models
+
+The delta dynamics predicts **proprioception and the contact channels**, not
+proprioception alone (`IrumSpec.dyn_fields`). Splitting `prop` from `wrench` is
+right for the policy's inputs — the corrector needs a per-step contact reading of
+its own — but wrong for the dynamics: cap's model predicts the wrench along with
+everything else, and a surprise computed over a state that excludes force cannot
+say *"it pushed back harder than expected"*, only *"the arm did not go where the
+command implied"*. For dressing that is the difference between a contact signal
+and a tracking error, and `S` is the whole content of D2's message.
+
+The combined state is built by one `res.stack(prop + wrench)` call, never by
+concatenating two stacks: `stack` interleaves arm-major, so the two orderings
+differ as soon as there is more than one arm, and the modality table follows the
+former.
 
 ## Variable control rate
 

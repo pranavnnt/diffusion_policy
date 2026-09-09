@@ -128,9 +128,10 @@ def train_dynamics(spec: IrumSpec, tr, va, seed: int, epochs: int, device: str,
     noise and D2 is not worth training yet.
     """
     torch.manual_seed(seed + 3000)
-    assert DY.state_dim(mods) == spec.prop_dim, (
+    assert DY.state_dim(mods) == spec.dyn_dim, (
         f"modality table covers {DY.state_dim(mods)} channels, spec declares "
-        f"{spec.prop_dim}")
+        f"{spec.dyn_dim} for the dynamics (prop {spec.prop_dim} + wrench "
+        f"{spec.wrench_dim})")
 
     def flat(d, key):
         a = d[key]
@@ -636,8 +637,9 @@ def run(zarr_path: Any, out_dir: str, seed: int = 0,
 
     frozen = None
     if "dyn" in stages or "D2" in stages:
-        log("[stage] dyn")
-        mods = F.modalities(res, spec.prop_fields)
+        log(f"[stage] dyn  (state = {spec.dyn_dim}d: prop {spec.prop_dim} + "
+            f"contact {spec.wrench_dim})")
+        mods = F.modalities(res, spec.dyn_fields)
         dyn = train_dynamics(spec, tr, va, seed, epochs["dyn"], device, log, mods)
         frozen = dyn.pop("dynamics")
         summary["dyn"] = {k: v for k, v in dyn.items() if k not in ("mods", "norm")}

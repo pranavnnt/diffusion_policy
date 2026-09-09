@@ -219,6 +219,13 @@ class IrumEpisodes:
         keys = list(rb.keys())
         prop_all = res.stack(self.prop_names)
         wrench_all = res.stack(self.wrench_names)
+        #: Built by one ``stack`` over the combined name list, never by
+        #: concatenating the two above: ``stack`` interleaves arm-major
+        #: (arm1's fields, then arm2's), so ``cat(stack(prop), stack(wrench))``
+        #: orders the channels differently from ``stack(prop + wrench)`` as soon
+        #: as there is more than one arm — and the modality table follows the
+        #: latter.  A silent mismatch there mislabels every delta channel.
+        dyn_all = res.stack(tuple(self.prop_names) + tuple(self.wrench_names))
         act_all = np.asarray(rb[action_key], np.float32)
         time_all = (np.asarray(rb[time_key], np.float64)
                     if time_key in keys else None)
@@ -232,7 +239,7 @@ class IrumEpisodes:
         starts = np.concatenate([[0], ends[:-1]])
         for a, b in zip(starts, ends):
             ep = {"prop": prop_all[a:b], "wrench": wrench_all[a:b],
-                  "action": act_all[a:b]}
+                  "dyn": dyn_all[a:b], "action": act_all[a:b]}
             #: ``dt`` is carried because this rig does not run at a fixed rate —
             #: the smoke episode varies from 0.05 s to 0.75 s between steps. A
             #: state *change* over a 15x-varying interval is not comparable
@@ -360,6 +367,7 @@ def build_chunks(eps: IrumEpisodes, spec: IrumSpec, indices: Sequence[int]
     for j in indices:
         ep = eps.episodes[j]
         y, w, a, dt = ep["prop"], ep["wrench"], ep["action"], ep["dt"]
+        d = ep["dyn"]
         n = len(y)
         for s in decision_steps(n, spec):
             frames = [max(s + prev_off, 0), s]
@@ -376,13 +384,13 @@ def build_chunks(eps: IrumEpisodes, spec: IrumSpec, indices: Sequence[int]
             #: mask is what matters, the zeros just keep the array rectangular.
             valid = int(s >= W)
             if valid:
-                out["hist_y"].append(y[s - W:s])
-                out["hist_y_next"].append(y[s - W + 1:s + 1])
+                out["hist_y"].append(d[s - W:s])
+                out["hist_y_next"].append(d[s - W + 1:s + 1])
                 out["hist_a"].append(a[s - W:s][:, chans])
                 out["hist_dt"].append(dt[s - W:s])
             else:
-                out["hist_y"].append(np.zeros((W, y.shape[-1]), np.float32))
-                out["hist_y_next"].append(np.zeros((W, y.shape[-1]), np.float32))
+                out["hist_y"].append(np.zeros((W, d.shape[-1]), np.float32))
+                out["hist_y_next"].append(np.zeros((W, d.shape[-1]), np.float32))
                 out["hist_a"].append(np.zeros((W, len(chans)), np.float32))
                 out["hist_dt"].append(np.zeros((W, 1), np.float32))
             out["msg_valid"].append(np.float32(valid))
