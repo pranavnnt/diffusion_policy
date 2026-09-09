@@ -152,9 +152,11 @@ class IrumEpisodes:
     def __init__(self, zarr_path: Any, cameras: Sequence[str] = (),
                  n_arms: int = 2, layout: Optional[F.PackedLayout] = None,
                  action_key: str = "action", time_key: str = "timestamp",
-                 require: Sequence[str] = (), warn: bool = True):
+                 require: Sequence[str] = (), warn: bool = True,
+                 image_size: Optional[Tuple[int, int]] = None):
         self.zarr_paths = discover_zarrs(zarr_path)
         self.cameras = tuple(cameras)
+        self.image_size = image_size
         self.n_declared = int(n_arms)
         self.action_key = action_key
 
@@ -244,9 +246,38 @@ class IrumEpisodes:
             else:
                 ep["dt"] = np.ones((b - a, 1), np.float32)
             for cam in self.cameras:
-                ep[cam] = np.asarray(rb[cam][a:b])
+                ep[cam] = self._frames(rb[cam][a:b])
             self.episodes.append(ep)
             self.episode_source.append(src_i)
+
+    def _frames(self, raw) -> np.ndarray:
+        """Camera frames at the size the policy declares, resized on load.
+
+        Not only a memory measure, though it is that too: the vision encoder
+        takes a ``crop_shape`` fraction of whatever it is handed, so feeding it a
+        480x640 frame with a 216x288 crop would show it 45% of the scene and call
+        the rest augmentation.  Resizing first, then cropping ~90%, is what the
+        crop was sized for.  ``image_size=None`` keeps the native resolution.
+        """
+        a = np.asarray(raw)
+        if self.image_size is None or a.shape[1:3] == tuple(self.image_size):
+            return a
+        import cv2
+
+        h, w = self.image_size
+        out = np.empty((len(a), h, w, a.shape[3]), dtype=a.dtype)
+        for i in range(len(a)):
+            #: INTER_AREA is the right filter for downscaling; the default
+            #: bilinear aliases, and aliasing on a wrist camera looks like
+            #: texture the policy can key on.
+            out[i] = cv2.resize(a[i], (w, h), interpolation=cv2.INTER_AREA)
+        return out
+
+    def native_image_size(self) -> Optional[Tuple[int, int]]:
+        for ep in self.episodes:
+            for cam in self.cameras:
+                return tuple(ep[cam].shape[1:3])
+        return None
 
     def _report_rate(self) -> None:
         """A rate this irregular breaks the slow/fast separation, so it is said out loud."""
@@ -362,6 +393,18 @@ def build_chunks(eps: IrumEpisodes, spec: IrumSpec, indices: Sequence[int]
             for k, v in out.items() if v}
 
 
+def short_episodes(eps: "IrumEpisodes", spec: IrumSpec) -> List[int]:
+    """Episodes too short to yield a single chunk.
+
+    A recording aborted after a couple of steps contributes nothing but still
+    counts as an episode — so it can be drawn into the validation split, where
+    it silently shrinks the held-out set to nothing.  Naming them is cheaper
+    than wondering why validation has fewer chunks than the ratio implies.
+    """
+    return [i for i, n in enumerate(eps.lengths())
+            if len(decision_steps(n, spec)) == 0]
+
+
 def action_residual_demand(chunks: Dict[str, np.ndarray], spec: IrumSpec
                           ) -> Dict[str, Any]:
     """How much per-step correction a chunk-level plan cannot express.
@@ -443,15 +486,24 @@ def load_split(zarr_path: str, cameras: Sequence[str] = (), n_arms: int = 2,
                layout: Optional[F.PackedLayout] = None, val_ratio: float = 0.2,
                seed: int = 42, require: Sequence[str] = (),
                spec_kw: Optional[Dict[str, Any]] = None, warn_scale: bool = True,
-               **kw
+               image_size: Optional[Tuple[int, int]] = None, **kw
                ) -> Tuple[Dict[str, np.ndarray], Dict[str, np.ndarray],
                           ChunkNormaliser, "IrumEpisodes", IrumSpec]:
     """Resolve the dataset, derive the spec from it, and cut it into chunks."""
     eps = IrumEpisodes(zarr_path, cameras=cameras, n_arms=n_arms, layout=layout,
-                       require=require, **kw)
+                       require=require, image_size=image_size, **kw)
+    spec_kw = dict(spec_kw or {})
+    native = eps.native_image_size()
+    if native is not None:
+        #: The declared input shape follows the frames actually produced, so a
+        #: shape_meta that disagrees with the tensors cannot reach the encoder.
+        spec_kw["image_shape"] = (3, native[0], native[1])
+        #: ~90% of the frame, matching the ratio the 240x320 default used.
+        spec_kw["crop_shape"] = (int(round(native[0] * 0.9)),
+                                 int(round(native[1] * 0.9)))
     spec = from_resolution(eps.resolution, cameras=cameras,
                            act_width=eps.episodes[0]["action"].shape[-1],
-                           n_declared=eps.n_declared, **(spec_kw or {}))
+                           n_declared=eps.n_declared, **spec_kw)
     if spec.act_scale is None and warn_scale:
         warnings.warn(
             f"actions are {spec.act_dim}-wide, which is not the 3-linear + "
@@ -467,8 +519,19 @@ def load_split(zarr_path: str, cameras: Sequence[str] = (), n_arms: int = 2,
             f"action channels {dropped} belong to arms the state vector does "
             f"not cover and are dropped from the target; the policy commands "
             f"{list(spec.act_channels)}.", stacklevel=2)
-    tr_idx, va_idx = episode_split(len(eps), val_ratio, seed,
-                                   sources=eps.episode_source)
+    empty = short_episodes(eps, spec)
+    if empty and warn_scale:
+        warnings.warn(
+            f"episode(s) {empty} are shorter than pred_horizon="
+            f"{spec.pred_horizon} and yield no chunks: "
+            f"{[eps.lengths()[i] for i in empty]} steps. They are excluded from "
+            f"the split so they cannot occupy a validation slot.", stacklevel=2)
+    keep = [i for i in range(len(eps)) if i not in set(empty)]
+    tr_idx, va_idx = episode_split(
+        len(keep), val_ratio, seed,
+        sources=[eps.episode_source[i] for i in keep])
+    tr_idx = np.asarray([keep[i] for i in tr_idx], dtype=np.int64)
+    va_idx = np.asarray([keep[i] for i in va_idx], dtype=np.int64)
     tr = build_chunks(eps, spec, tr_idx)
     norm = ChunkNormaliser(tr, act_scale=spec.act_scale)
     tr = norm.apply(tr)

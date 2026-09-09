@@ -629,3 +629,19 @@ def test_action_width_comes_from_the_recording_not_a_constant():
     #: and an action that is not the 3-linear/3-angular layout gets no declared
     #: scale, so it falls back to the observed range rather than a wrong constant
     assert spec.act_scale is None
+
+
+def test_short_episodes_are_named_and_excluded():
+    """A two-step aborted recording still counts as an episode until it isn't."""
+    from diffusion_policy.irum.dataset import short_episodes
+
+    class _Eps:
+        def __init__(self, lens):
+            self._l = lens
+        def lengths(self):
+            return self._l
+        def __len__(self):
+            return len(self._l)
+
+    spec = tiny_spec(pred_horizon=8)
+    assert short_episodes(_Eps([2, 100, 7, 8]), spec) == [0, 2]

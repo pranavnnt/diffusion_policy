@@ -538,6 +538,7 @@ def run(zarr_path: Any, out_dir: str, seed: int = 0,
         layout: Optional[F.PackedLayout] = None,
         fast_frac: Any = "auto",
         require: Sequence[str] = (), action_key: str = "action",
+        image_size: Optional[Tuple[int, int]] = (240, 320),
         estimator: str = f"last{SEL.LAST_K}", keep_grid: bool = True,
         log: Callable[[str], None] = print) -> Dict[str, Any]:
     unknown = [s for s in stages if s not in STAGES]
@@ -552,11 +553,14 @@ def run(zarr_path: Any, out_dir: str, seed: int = 0,
     if log is print:
         log = _tee(out_dir)
     log(f"[out]  {os.path.abspath(out_dir)}")
+    if image_size is not None:
+        log(f"[data] camera frames resized to {image_size[0]}x{image_size[1]}")
     log(f"[data] {zarr_path}")
     tr, va, norm, eps, spec = load_split(
         zarr_path, cameras=cameras, n_arms=n_arms, layout=layout,
         val_ratio=val_ratio, seed=seed, require=require,
-        action_key=action_key, spec_kw=dict(**DRESSING_HORIZONS))
+        action_key=action_key, image_size=image_size,
+        spec_kw=dict(**DRESSING_HORIZONS))
 
     res = eps.resolution
     log(f"[fields] usable: {', '.join(res.usable) or '(none)'}")
@@ -722,6 +726,11 @@ def main(argv=None) -> int:
     ap.add_argument("--n-arms", type=int, default=2)
     ap.add_argument("--cameras", default=",".join(DRESSING_CAMERAS),
                     help="comma-separated zarr keys; empty for a state-only run")
+    ap.add_argument("--image-size", default="240x320",
+                    help="resize camera frames on load, e.g. 240x320, or "
+                         "'native' to keep the recorded resolution. The encoder "
+                         "crops ~90%% of whatever it is given, so a frame much "
+                         "larger than this is mostly discarded, not used.")
     ap.add_argument("--layout", default="smoke", choices=sorted(LAYOUTS),
                     help="packed-state layout; 'none' expects one array per field")
     ap.add_argument("--action-key", default="action",
@@ -771,7 +780,10 @@ def main(argv=None) -> int:
         fast_frac=(a.fast_frac if a.fast_frac == "auto"
                    else float(a.fast_frac)),
         require=tuple(r for r in a.require.split(",") if r),
-        action_key=a.action_key, estimator=a.estimator, keep_grid=not a.no_keep_grid, epochs=ep)
+        action_key=a.action_key,
+        image_size=(None if a.image_size == "native"
+                    else tuple(int(v) for v in a.image_size.lower().split("x"))),
+        estimator=a.estimator, keep_grid=not a.no_keep_grid, epochs=ep)
     return 0
 
 
