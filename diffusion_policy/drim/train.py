@@ -920,11 +920,12 @@ def main(argv=None) -> int:
                          "delta-pose action and the zigzag primitive as a "
                          "dynamics input. 'none' leaves the core defaults, "
                          "which know about no particular robot.")
-    ap.add_argument("--roi", default="wide", choices=sorted(DRESS.ROIS),
-                    help="which field of view to crop to before resizing: "
-                         "wide (89%% of the motion energy, downsampled), mid "
-                         "(77%%, exactly 240x320 so no resampling), hand (41%%, "
-                         "upsampled, no context), or full.")
+    ap.add_argument("--roi", default="custom43", choices=sorted(DRESS.ROIS),
+                    help="field of view to crop to before resizing. custom43 "
+                         "(default) is the hand-drawn box at the encoder's 3:4 "
+                         "aspect; custom is the same box undistorted-by-nothing "
+                         "and so resized anisotropically; wide / mid / hand are "
+                         "placed by motion energy; full is no crop.")
     ap.add_argument("--cameras", default=None,
                     help="comma-separated zarr keys; empty for a state-only "
                          "run. Defaults to the profile's cameras.")

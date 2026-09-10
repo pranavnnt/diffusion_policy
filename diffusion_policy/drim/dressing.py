@@ -148,10 +148,12 @@ ROIS: Dict[str, Dict[str, Tuple[int, int, int, int]]] = {
     "wide": ROI_WIDE, "mid": ROI_MID, "hand": ROI_HAND,
     "custom": ROI_CUSTOM, "custom43": ROI_CUSTOM_43, "full": {},
 }
-#: The default. ``MID`` would avoid resampling, but until one of these is shown
-#: to train better the wider field of view is the safer place to start: context
-#: lost to a crop cannot be recovered, resolution can.
-ROI = ROI_WIDE
+#: The default: the hand-drawn box, at the encoder's aspect. Chosen over the
+#: measured ones because a person could see that the arm and the bed edge are
+#: what make the cloth's position readable, and over the raw hand-drawn box
+#: because that one is resized anisotropically, by a different factor in each
+#: camera.
+ROI = ROI_CUSTOM_43
 
 #: The bed-front camera faces a window.  Between-episode brightness std is 6.7
 #: against 2.5 within one, and the colour shifts with it (R sits ~10 below G/B,
@@ -174,7 +176,7 @@ def arm_act_channels(arm_ids: Sequence[int], per_arm: int = ACT_PER_ARM
 
 
 def profile(cameras: Optional[Sequence[str]] = None,
-            roi: str = "wide") -> Dict[str, Any]:
+            roi: str = "custom43") -> Dict[str, Any]:
     """Defaults a dressing run starts from.  ``--profile none`` skips all of it."""
     if roi not in ROIS:
         raise KeyError(f"unknown roi {roi!r}; have {sorted(ROIS)}")
