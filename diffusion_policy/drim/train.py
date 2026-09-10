@@ -364,9 +364,10 @@ _valid_action_mse = action_mse                       # older call sites
 
 
 def train_b0(spec, tr, va, seed, epochs, device, log,
-             photometric=None) -> Dict[str, Any]:
+             photometric=None, vision_weights=None) -> Dict[str, Any]:
     torch.manual_seed(seed)
-    model = PL.build("B0", spec, photometric=photometric).to(device)
+    model = PL.build("B0", spec, photometric=photometric,
+                     vision_weights=vision_weights).to(device)
     params = [p for p in model.parameters() if p.requires_grad]
     opt = torch.optim.AdamW(params, lr=LR_FLOW, weight_decay=WEIGHT_DECAY)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=epochs)
@@ -673,6 +674,7 @@ def run(zarr_path: Any, out_dir: str, seed: int = 0,
         act_per_arm: Optional[int] = None,
         roi: Optional[Dict[str, Any]] = None,
         photometric: Optional[Dict[str, float]] = None,
+        vision_weights: Optional[str] = None,
         image_size: Optional[Tuple[int, int]] = None,
         horizons: Optional[Dict[str, Any]] = None,
         estimator: str = SEL.DEFAULT_ESTIMATOR, keep_grid: bool = True,
@@ -838,11 +840,16 @@ def run(zarr_path: Any, out_dir: str, seed: int = 0,
               if (photometric and spec.is_image) else None)
     if jitter is not None:
         log(f"[augment] {jitter.extra_repr()}")
+    if spec.is_image:
+        log(f"[vision] resnet18 weights={vision_weights or 'random init'}"
+            + ("" if vision_weights else
+               "   <- trained from scratch on "
+               f"{len(tr['target'])} chunks"))
 
     if "B0" in stages:
         log("[stage] B0")
         r = train_b0(spec, t_tr, t_va, seed, epochs["B0"], device, log,
-                     photometric=jitter)
+                     photometric=jitter, vision_weights=vision_weights)
         models["B0"] = r.pop("model")
         summary["B0"] = _save("B0", r)
 
@@ -1040,6 +1047,11 @@ def main(argv=None) -> int:
     ap.add_argument("--epochs-b0", type=int, default=None)
     ap.add_argument("--epochs-b1", type=int, default=None)
     ap.add_argument("--epochs-d2", type=int, default=None)
+    ap.add_argument("--vision-weights", default=None,
+                    help="resnet18 initialisation. None (default, matching "
+                         "dap) trains it from scratch; IMAGENET1K_V1 starts "
+                         "from the pretrained weights, which with a few "
+                         "hundred chunks is likely the larger effect.")
     ap.add_argument("--no-diagnose", action="store_true",
                     help="skip the pre-deployment diagnostics (trajectory "
                          "divergence through the dynamics, surprise shift, "
@@ -1111,6 +1123,7 @@ def main(argv=None) -> int:
         act_per_arm=prof.pop("act_per_arm", None),
         roi=prof.pop("roi", None),
         photometric=prof.pop("photometric", None),
+        vision_weights=a.vision_weights,
         horizons=prof,
         estimator=a.estimator, keep_grid=not a.no_keep_grid, epochs=ep,
         diagnose=not a.no_diagnose, diag_steps=a.diag_steps,

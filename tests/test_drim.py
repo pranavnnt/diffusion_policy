@@ -956,3 +956,53 @@ def test_arrow_encodings_do_not_overlap_the_command_keys():
     from diffusion_policy.drim import roi_tool as R
     for key in "hpcrs123q":
         assert ord(key) not in R._ARROWS, key
+
+
+# --------------------------------------------------------------------------- #
+# 15. the image path, which the state-only specs above never touch
+# --------------------------------------------------------------------------- #
+
+
+def image_spec(**kw):
+    """A tiny two-camera spec. resnet18 is built with weights=None, so this
+    constructs offline and fast."""
+    base = dict(prop_dim=14, act_dim=3, wrench_dim=6,
+                cameras=("cam_a", "cam_b"), image_shape=(3, 48, 64),
+                crop_shape=(44, 58), pred_horizon=4, exec_horizon=2,
+                message_window=2, message_dim=8,
+                fast_limits=(0.15, 0.15, 0.15))
+    base.update(kw)
+    return DrimSpec(**base)
+
+
+def test_the_image_stage_chain_builds_through_the_public_helper():
+    """train_b0 calls build(...), not the constructor -- an argument added to
+    one and not the other only shows up on a real image run."""
+    from diffusion_policy.drim.augment import PhotometricJitter
+    spec = image_spec()
+    b0 = PL.build("B0", spec, photometric=PhotometricJitter())
+    assert b0.photometric is not None and b0.vision is not None
+    b1 = PL.build("B1", spec, core=b0)
+    d2 = PL.build("D2", spec, core=b1, message_in_dims=(6, 6))
+    #: the jitter is inherited with the frozen trunk, not rebuilt per stage
+    assert b1.photometric is b0.photometric
+    assert d2.photometric is b0.photometric
+
+
+def test_an_image_policy_encodes_a_batch_end_to_end():
+    spec = image_spec()
+    m = PL.build("B0", spec).eval()
+    n = 2
+    rgb = {c: torch.randint(0, 255, (n, spec.n_obs_steps, 48, 64, 3),
+                            dtype=torch.uint8) for c in spec.cameras}
+    prop = torch.randn(n, spec.n_obs_steps, spec.prop_dim)
+    wr = torch.randn(n, spec.n_obs_steps, spec.wrench_dim)
+    ctx = m.context(rgb, prop, wr)
+    assert ctx.shape == (n, spec.context_dim)
+    chunk = m.sample_chunk(ctx, None, torch.zeros(n, spec.pred_horizon, spec.act_dim))
+    assert chunk.shape == (n, spec.pred_horizon, spec.act_dim)
+
+
+def test_a_state_only_spec_has_no_vision_or_jitter():
+    m = PL.build("B0", tiny_spec())
+    assert m.vision is None and m.photometric is None

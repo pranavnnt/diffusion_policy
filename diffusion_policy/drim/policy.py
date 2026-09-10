@@ -42,7 +42,8 @@ VARIANTS = ("B0", "B1", "D2")
 PARENT = {"B0": None, "B1": "B0", "D2": "B1"}
 
 
-def build_vision(spec: DrimSpec, random_crop: bool = True) -> MultiImageObsEncoder:
+def build_vision(spec: DrimSpec, random_crop: bool = True,
+                 weights: Optional[str] = None) -> MultiImageObsEncoder:
     """This repository's own encoder stack: resnet18, group norm, random crop.
 
     Nothing new is installed and nothing is re-implemented — dap reached for the
@@ -52,13 +53,21 @@ def build_vision(spec: DrimSpec, random_crop: bool = True) -> MultiImageObsEncod
     Group norm rather than batch norm: the batch here is chunks drawn from a
     handful of episodes, which is exactly the correlated-batch structure batch
     norm handles badly, and EMA over batch-norm statistics is worse still.
+
+    ``weights`` is ``None`` by default, matching dap — the encoder is trained
+    from scratch. Worth knowing rather than assuming: with a few hundred chunks
+    an 11.2 M-parameter backbone learned from nothing is likely the binding
+    constraint, and ``imagenet_norm=True`` below normalises the input as if for
+    a pretrained one regardless. ``"IMAGENET1K_V1"`` uses the pretrained
+    weights; it changes what the frozen trunk means, so it is a decision to
+    make once and record, not a knob to turn between runs.
     """
     c, h, w = spec.image_shape
     shape_meta = {"obs": {k: {"shape": (c, h, w), "type": "rgb"}
                           for k in spec.cameras}}
     return MultiImageObsEncoder(
         shape_meta=shape_meta,
-        rgb_model=get_resnet("resnet18"),
+        rgb_model=get_resnet("resnet18", weights=weights),
         crop_shape=tuple(spec.crop_shape),
         random_crop=random_crop,
         use_group_norm=True,
@@ -80,7 +89,8 @@ class DrimPolicy(nn.Module):
                  core: Optional["DrimPolicy"] = None,
                  message_in_dims: Optional[Tuple[int, int]] = None,
                  freeze_base: bool = True,
-                 photometric: Optional[PhotometricJitter] = None):
+                 photometric: Optional[PhotometricJitter] = None,
+                 vision_weights: Optional[str] = None):
         super().__init__()
         if variant not in VARIANTS:
             raise KeyError(f"unknown variant {variant!r}; have {VARIANTS}")
@@ -94,7 +104,7 @@ class DrimPolicy(nn.Module):
         # -- vision ---------------------------------------------------------
         if spec.is_image:
             self.vision = (core.vision if core is not None
-                           else build_vision(spec))
+                           else build_vision(spec, weights=vision_weights))
             #: Inherited with the vision encoder: a later stage that augmented
             #: differently from the frozen trunk it nests on would be measuring
             #: the augmentation, not the stage.
@@ -353,6 +363,9 @@ class DrimPolicy(nn.Module):
 
 def build(variant: str, spec: DrimSpec, core: Optional[DrimPolicy] = None,
           message_in_dims: Optional[Tuple[int, int]] = None,
-          freeze_base: bool = True) -> DrimPolicy:
+          freeze_base: bool = True,
+          photometric: Optional[PhotometricJitter] = None,
+          vision_weights: Optional[str] = None) -> DrimPolicy:
     return DrimPolicy(variant, spec, core=core,
-                      message_in_dims=message_in_dims, freeze_base=freeze_base)
+                      message_in_dims=message_in_dims, freeze_base=freeze_base,
+                      photometric=photometric, vision_weights=vision_weights)
