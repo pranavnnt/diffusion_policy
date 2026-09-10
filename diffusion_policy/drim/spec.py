@@ -1,4 +1,4 @@
-"""Dimensions, horizons and windows for one IRUM run.
+"""Dimensions, horizons and windows for one DRIM run.
 
 The dap benchmarks (`cap_constraint_benchmark`, `drawer_constraint_benchmark`)
 bake their dimensions into module-level constants — ``OBS_DIM = 59``,
@@ -21,7 +21,7 @@ import numpy as np
 
 
 @dataclass(frozen=True)
-class IrumSpec:
+class DrimSpec:
     """One task's shape contract.
 
     ``wrench_dim`` may be 0.  The dap stacks always carried a wrench because
@@ -72,7 +72,7 @@ class IrumSpec:
     #: width of the learned visual latent per camera (resnet18 after global pool)
     vision_dim: int = 512
 
-    #: Which declared fields (``irum.fields.ARM_FIELDS``) the widths above were
+    #: Which declared fields (``drim.fields.ARM_FIELDS``) the widths above were
     #: built from, and over how many arms.  Recorded so a checkpoint cannot be
     #: loaded against a dataset that measured a different set: the widths can
     #: match by coincidence while the channels mean different things.
@@ -150,7 +150,7 @@ class IrumSpec:
                 "action units, not from a default carried over from cap/drawer")
         return np.asarray(self.fast_limits, dtype=np.float32)
 
-    def assert_schema(self, other: "IrumSpec") -> None:
+    def assert_schema(self, other: "DrimSpec") -> None:
         """Refuse a spec whose channels are not the ones these weights saw.
 
         Width equality is not enough.  Dropping ``gripper_pos`` and
@@ -170,7 +170,7 @@ class IrumSpec:
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, d: Dict[str, Any]) -> "IrumSpec":
+    def from_dict(cls, d: Dict[str, Any]) -> "DrimSpec":
         d = dict(d)
         for k in ("cameras", "image_shape", "crop_shape", "slow_offsets",
                   "prop_fields", "wrench_fields", "arm_ids", "act_channels",
@@ -211,7 +211,7 @@ def fast_limits_from_fraction(frac: float, act_scale: Sequence[float],
     Because actions here are already normalised by ``act_scale``, one normalised
     unit *is* full command, so the ratio reduces to ``frac`` directly.
     ``active`` names the channels the corrector may write; every other channel
-    gets 0, which :class:`~diffusion_policy.irum.nets.FastCorrector` makes
+    gets 0, which :class:`~diffusion_policy.drim.nets.FastCorrector` makes
     structurally silent rather than merely discouraged.
     """
     assert 0.0 <= frac <= 1.0, f"a fraction of full command, got {frac}"
@@ -243,7 +243,7 @@ def fast_frac_from_demand(demand: Dict[str, Any], active: Sequence[int],
 
 def from_resolution(res, cameras: Sequence[str] = (),
                     act_width: Optional[int] = None,
-                    n_declared: Optional[int] = None, **kw) -> IrumSpec:
+                    n_declared: Optional[int] = None, **kw) -> DrimSpec:
     """Build a spec from what a dataset actually measured.
 
     The widths are a consequence of the resolution, never an argument: a spec
@@ -251,7 +251,7 @@ def from_resolution(res, cameras: Sequence[str] = (),
     the observation encoder, where the shape error names a matmul rather than a
     missing sensor.
     """
-    from diffusion_policy.irum import fields as F
+    from diffusion_policy.drim import fields as F
 
     prop = res.prop_names()
     wrench = res.wrench_names()
@@ -280,7 +280,7 @@ def from_resolution(res, cameras: Sequence[str] = (),
         #: falls back to the observed range and says so.
         scale = tuple(ARM_ACT_SCALE[c % ACT_PER_ARM] for c in chans)
     kw.pop("act_dim", None)          # a consequence of the channels, not an input
-    return IrumSpec(
+    return DrimSpec(
         prop_dim=res.width(prop), wrench_dim=res.width(wrench),
         act_dim=len(chans), act_channels=tuple(chans),
         act_scale=(tuple(scale) if scale is not None else None),

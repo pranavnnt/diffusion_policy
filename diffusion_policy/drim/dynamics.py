@@ -69,10 +69,10 @@ Modality = Tuple[str, Tuple[int, int], int, str]
 def dressing_modalities(res, names) -> List[Modality]:
     """The modality table for a resolved dataset.
 
-    Delegates to :func:`diffusion_policy.irum.fields.modalities` so the layout is
+    Delegates to :func:`diffusion_policy.drim.fields.modalities` so the layout is
     derived from the fields that actually resolved, never written out twice.
     """
-    from diffusion_policy.irum import fields as F
+    from diffusion_policy.drim import fields as F
 
     return F.modalities(res, names)
 

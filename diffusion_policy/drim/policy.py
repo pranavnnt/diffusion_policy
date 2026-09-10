@@ -20,7 +20,7 @@ two separately trained networks.
 
 Ported from ``cap_constraint_benchmark/liftoff_v4/models_lo4.py`` (the container
 and the algebra) and ``liftoff_v6_image/models_lo6.py`` (the vision front end).
-Every dimension comes from :class:`~diffusion_policy.irum.spec.IrumSpec`.
+Every dimension comes from :class:`~diffusion_policy.drim.spec.DrimSpec`.
 """
 
 from __future__ import annotations
@@ -34,14 +34,14 @@ import torch.nn as nn
 from diffusion_policy.model.vision.model_getter import get_resnet
 from diffusion_policy.model.vision.multi_image_obs_encoder import MultiImageObsEncoder
 
-from diffusion_policy.irum import nets as N
-from diffusion_policy.irum.spec import IrumSpec
+from diffusion_policy.drim import nets as N
+from diffusion_policy.drim.spec import DrimSpec
 
 VARIANTS = ("B0", "B1", "D2")
 PARENT = {"B0": None, "B1": "B0", "D2": "B1"}
 
 
-def build_vision(spec: IrumSpec, random_crop: bool = True) -> MultiImageObsEncoder:
+def build_vision(spec: DrimSpec, random_crop: bool = True) -> MultiImageObsEncoder:
     """This repository's own encoder stack: resnet18, group norm, random crop.
 
     Nothing new is installed and nothing is re-implemented — dap reached for the
@@ -66,7 +66,7 @@ def build_vision(spec: IrumSpec, random_crop: bool = True) -> MultiImageObsEncod
     )
 
 
-class IrumPolicy(nn.Module):
+class DrimPolicy(nn.Module):
     """One object for all three stages.
 
     ``core`` nests a stage on its trained parent: ``B1`` reuses ``B0``'s slow
@@ -75,8 +75,8 @@ class IrumPolicy(nn.Module):
     parts are the *same tensors*, not a reload that could differ.
     """
 
-    def __init__(self, variant: str, spec: IrumSpec,
-                 core: Optional["IrumPolicy"] = None,
+    def __init__(self, variant: str, spec: DrimSpec,
+                 core: Optional["DrimPolicy"] = None,
                  message_in_dims: Optional[Tuple[int, int]] = None,
                  freeze_base: bool = True):
         super().__init__()
@@ -323,7 +323,7 @@ class IrumPolicy(nn.Module):
             return None
         return self.fast.max_residual.detach().cpu().numpy().astype(float)
 
-    def assert_authority(self, spec: IrumSpec) -> None:
+    def assert_authority(self, spec: DrimSpec) -> None:
         """Refuse a corrector whose ceilings are not the ones declared.
 
         dap hit this the expensive way: a nested load dropped ``max_residual``
@@ -340,8 +340,8 @@ class IrumPolicy(nn.Module):
             f"corrector carries ceilings {got}, spec declares {want}")
 
 
-def build(variant: str, spec: IrumSpec, core: Optional[IrumPolicy] = None,
+def build(variant: str, spec: DrimSpec, core: Optional[DrimPolicy] = None,
           message_in_dims: Optional[Tuple[int, int]] = None,
-          freeze_base: bool = True) -> IrumPolicy:
-    return IrumPolicy(variant, spec, core=core,
+          freeze_base: bool = True) -> DrimPolicy:
+    return DrimPolicy(variant, spec, core=core,
                       message_in_dims=message_in_dims, freeze_base=freeze_base)

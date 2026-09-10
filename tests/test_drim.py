@@ -1,7 +1,7 @@
-"""Structural invariants of the IRUM port.
+"""Structural invariants of the DRIM port.
 
 Not accuracy tests — there is nothing to be accurate about yet.  These pin the
-four properties that make an IRUM result *interpretable*, each of which dap
+four properties that make an DRIM result *interpretable*, each of which dap
 broke at least once and each of which fails silently:
 
 1. ``D2`` with a null message is ``B1`` exactly (the gated route).
@@ -10,7 +10,7 @@ broke at least once and each of which fails silently:
 3. The message is masked wherever no full causal window exists.
 4. Nothing selects a checkpoint on a score that does not exist.
 
-Run: ``pytest tests/test_irum.py``
+Run: ``pytest tests/test_drim.py``
 """
 
 import os
@@ -19,12 +19,12 @@ import numpy as np
 import pytest
 import torch
 
-from diffusion_policy.irum import dynamics as DY
-from diffusion_policy.irum import fields as FL
-from diffusion_policy.irum import nets as N
-from diffusion_policy.irum import policy as PL
-from diffusion_policy.irum import selection as SEL
-from diffusion_policy.irum.spec import IrumSpec
+from diffusion_policy.drim import dynamics as DY
+from diffusion_policy.drim import fields as FL
+from diffusion_policy.drim import nets as N
+from diffusion_policy.drim import policy as PL
+from diffusion_policy.drim import selection as SEL
+from diffusion_policy.drim.spec import DrimSpec
 
 
 def tiny_spec(**kw):
@@ -33,7 +33,7 @@ def tiny_spec(**kw):
                 pred_horizon=8, exec_horizon=4, message_window=4,
                 message_dim=8, fast_limits=tuple([0.05] * 12))
     base.update(kw)
-    return IrumSpec(**base)
+    return DrimSpec(**base)
 
 
 def batch(spec, n=4, cond_dim=0):
@@ -190,7 +190,7 @@ def test_message_is_zero_where_no_full_window_exists():
 
 
 def test_decision_steps_only_yield_full_chunks():
-    from diffusion_policy.irum.dataset import decision_steps
+    from diffusion_policy.drim.dataset import decision_steps
     spec = tiny_spec()
     s = decision_steps(25, spec)
     assert s.max() + spec.pred_horizon <= 25
@@ -332,7 +332,7 @@ def test_one_array_per_field_is_preferred_over_the_packed_layout():
 
 
 def test_spec_refuses_a_dataset_with_different_channels():
-    from diffusion_policy.irum.spec import from_resolution
+    from diffusion_policy.drim.spec import from_resolution
     full = FL.resolve(_packed_source(), n_arms=2, layout=FL.SMOKE_LAYOUT, warn=False)
     src = _packed_source()
     src["arm1_wrench"] = np.ones((6, 6), np.float32)
@@ -370,7 +370,7 @@ def test_no_change_baseline_is_reported_in_delta_units():
 
 def test_action_is_trimmed_to_the_arms_the_state_covers():
     """Commanding an arm the observation cannot see is noise the flow field fits."""
-    from diffusion_policy.irum.spec import from_resolution
+    from diffusion_policy.drim.spec import from_resolution
     res = FL.resolve(_packed_source(arm2_live=False), n_arms=2,
                      layout=FL.SMOKE_LAYOUT, warn=False)
     spec = from_resolution(res)
@@ -381,13 +381,13 @@ def test_action_is_trimmed_to_the_arms_the_state_covers():
 
 def test_action_channels_follow_the_live_arm_not_its_position():
     """With arm1 dropped, arm2's channels are 6..11 — not 0..5."""
-    from diffusion_policy.irum.spec import arm_act_channels
+    from diffusion_policy.drim.spec import arm_act_channels
     assert arm_act_channels((1,)) == (6, 7, 8, 9, 10, 11)
     assert arm_act_channels((0, 1))[-1] == 11
 
 
 def test_dead_channels_get_zero_authority():
-    from diffusion_policy.irum.spec import fast_limits_from_fraction, ARM_ACT_SCALE
+    from diffusion_policy.drim.spec import fast_limits_from_fraction, ARM_ACT_SCALE
     lim = fast_limits_from_fraction(0.05, ARM_ACT_SCALE, active=[1])
     assert lim == (0.0, 0.05, 0.0, 0.0, 0.0, 0.0)
     #: and a zero ceiling is structurally silent, not merely small
@@ -402,15 +402,15 @@ def test_dead_channels_get_zero_authority():
 
 
 def test_fraction_must_be_a_fraction():
-    from diffusion_policy.irum.spec import fast_limits_from_fraction, ARM_ACT_SCALE
+    from diffusion_policy.drim.spec import fast_limits_from_fraction, ARM_ACT_SCALE
     with pytest.raises(AssertionError, match="fraction of full command"):
         fast_limits_from_fraction(1.5, ARM_ACT_SCALE)
 
 
 def test_actions_normalise_by_the_declared_command_scale():
     """Full deflection maps to +/-1 regardless of what this dataset happened to use."""
-    from diffusion_policy.irum.dataset import ChunkNormaliser
-    from diffusion_policy.irum.spec import ARM_ACT_SCALE
+    from diffusion_policy.drim.dataset import ChunkNormaliser
+    from diffusion_policy.drim.spec import ARM_ACT_SCALE
     data = {"target": np.full((4, 8, 6), 0.001, np.float32)}   # a timid dataset
     n = ChunkNormaliser(data, act_scale=ARM_ACT_SCALE)
     full = np.array([[[0.02, 0.02, 0.02, 0.05, 0.05, 0.05]]], np.float32)
@@ -419,7 +419,7 @@ def test_actions_normalise_by_the_declared_command_scale():
 
 def test_residual_demand_is_in_fractions_of_full_command():
     """The number the authority fraction should be set from, before any training."""
-    from diffusion_policy.irum.dataset import action_residual_demand
+    from diffusion_policy.drim.dataset import action_residual_demand
     spec = tiny_spec(pred_horizon=4, exec_horizon=4)
     #: a chunk alternating +/-0.2 around zero: the deviation from the chunk mean
     #: is 0.2 on every step, the step-to-step change is 0.4
@@ -437,7 +437,7 @@ def test_residual_demand_is_in_fractions_of_full_command():
 
 
 def test_discover_zarrs_accepts_a_store_a_directory_and_a_list(tmp_path):
-    from diffusion_policy.irum.dataset import discover_zarrs
+    from diffusion_policy.drim.dataset import discover_zarrs
     root = tmp_path / "data"
     for name in ("b_trial", "a_trial"):
         d = root / f"{name}.zarr"
@@ -450,7 +450,7 @@ def test_discover_zarrs_accepts_a_store_a_directory_and_a_list(tmp_path):
 
 
 def test_discover_zarrs_refuses_an_empty_directory(tmp_path):
-    from diffusion_policy.irum.dataset import discover_zarrs
+    from diffusion_policy.drim.dataset import discover_zarrs
     (tmp_path / "empty").mkdir()
     with pytest.raises(FileNotFoundError, match="no zarr stores"):
         discover_zarrs(tmp_path / "empty")
@@ -458,7 +458,7 @@ def test_discover_zarrs_refuses_an_empty_directory(tmp_path):
 
 def test_split_is_stratified_by_store():
     """An unstratified draw can put a whole session in validation."""
-    from diffusion_policy.irum.dataset import episode_split
+    from diffusion_policy.drim.dataset import episode_split
     sources = [0] * 10 + [1] * 10
     tr, va = episode_split(20, val_ratio=0.2, seed=0, sources=sources)
     assert len(va) == 4
@@ -469,7 +469,7 @@ def test_split_is_stratified_by_store():
 
 def test_a_single_episode_store_is_never_held_out_entirely():
     """Holding out a singleton store removes that session from training."""
-    from diffusion_policy.irum.dataset import episode_split
+    from diffusion_policy.drim.dataset import episode_split
     sources = [0, 1, 1, 1, 1]
     tr, va = episode_split(5, val_ratio=0.5, seed=0, sources=sources)
     assert 0 in tr
@@ -477,7 +477,7 @@ def test_a_single_episode_store_is_never_held_out_entirely():
 
 
 def test_one_episode_gives_an_empty_validation_set():
-    from diffusion_policy.irum.dataset import episode_split
+    from diffusion_policy.drim.dataset import episode_split
     tr, va = episode_split(1, val_ratio=0.2, seed=0, sources=[0])
     assert list(tr) == [0] and len(va) == 0
 
@@ -517,27 +517,58 @@ def _curve(vals, every=10):
     return [{"epoch": (i + 1) * every, "val_loss": v} for i, v in enumerate(vals)]
 
 
-def test_bestval_picks_the_lowest_validation_epoch():
+def test_a_criterion_picks_one_epoch_the_raw_argmin_without_smoothing():
     c = _curve([1.0, 0.4, 0.7, 0.9])
-    assert SEL.select_epochs([10, 20, 30, 40], "bestval", curve=c) == [20]
+    assert SEL.select_epochs([10, 20, 30, 40], "val_loss", curve=c, smooth=0) == [20]
 
 
-def test_bestval_still_refuses_rollout_ranked_estimators():
-    with pytest.raises(ValueError, match="rollout success"):
+def test_smoothing_moves_the_pick_off_a_lone_dip():
+    """An argmin over a noisy curve is biased low; the window damps that."""
+    c = _curve([1.0, 0.4, 0.7, 0.9])
+    #: ep20's dip is not supported by its neighbours, ep30's region is lower
+    assert SEL.select_epochs([10, 20, 30, 40], "val_loss", curve=c, smooth=1) == [30]
+
+
+def test_a_criterion_always_names_exactly_one_deployable_checkpoint():
+    c = _curve([1.0, 0.4, 0.7, 0.9])
+    for est in ("val_loss", "action_mse", "bestval"):
+        rows = [dict(r, action_mse=r["val_loss"]) for r in c]
+        assert len(SEL.select_epochs([10, 20, 30, 40], est, curve=rows)) == 1
+
+
+def test_divergence_needs_scores_because_it_is_not_on_the_curve():
+    with pytest.raises(ValueError, match="score per candidate"):
+        SEL.select_epochs([10, 20], "divergence", curve=_curve([1.0, 0.5]))
+    assert SEL.select_epochs([10, 20, 30], "divergence",
+                             scores={10: 0.9, 20: 0.2, 30: 0.5}) == [20]
+
+
+def test_rollout_ranked_estimators_are_still_refused():
+    with pytest.raises(ValueError, match="no environment to roll out in"):
         SEL.select_epochs([10, 20], "best", curve=_curve([1.0, 0.5]))
 
 
-def test_selection_note_records_what_bestval_would_have_picked():
-    """The disagreement is data, not a matter of opinion, so it is always logged."""
+def test_selection_note_records_every_criterion_s_pick():
+    """A disagreement between criteria is data, so it is always recorded."""
     spec = tiny_spec()
     m = PL.build("B0", spec)
     bank = SEL.SnapshotBank(4, every=1)
     for ep, vl in zip((1, 2, 3, 4), (1.0, 0.4, 0.7, 0.9)):
-        bank.observe(m, ep, val_loss=vl)
-    note = SEL.selection_note(bank, "last2")
+        bank.observe(m, ep, val_loss=vl, action_mse=vl)
+    note = SEL.selection_note(bank, "last2", smooth=0)
     assert note["selected_epochs"] == [3, 4]
-    assert note["bestval_epoch"] == 2
-    assert note["agrees_with_bestval"] is False
+    assert note["would_pick"]["val_loss"] == 2
+    assert note["would_pick"]["last1"] == 4
+    assert note["criteria_agree"] is False
+
+
+def test_last_k_is_kept_but_selects_on_nothing():
+    """Documented as a reproduction path, not a selector — on a rising tail it
+    deploys the overfit model, which is what the 0909 run showed."""
+    rising = _curve([0.9, 0.5, 0.3, 0.6, 1.0])
+    eps = [10, 20, 30, 40, 50]
+    assert SEL.select_epochs(eps, "last3", curve=rising) == [30, 40, 50]
+    assert SEL.select_epochs(eps, "val_loss", curve=rising, smooth=0) == [30]
 
 
 def test_a_rising_tail_is_flagged_because_last_k_assumes_a_plateau():
@@ -561,7 +592,7 @@ def test_a_flat_tail_is_not_flagged():
 
 
 def test_auto_fast_frac_comes_from_the_measured_demand():
-    from diffusion_policy.irum.spec import fast_frac_from_demand
+    from diffusion_policy.drim.spec import fast_frac_from_demand
     demand = {"vs_chunk_mean": {"p95": [0.01, 0.12, 0.30]}}
     assert fast_frac_from_demand(demand, active=[1]) == pytest.approx(0.12)
     #: channels that never move do not raise the ceiling
@@ -621,7 +652,7 @@ def test_ee_force_is_the_fallback_for_a_missing_wrench():
 
 def test_action_width_comes_from_the_recording_not_a_constant():
     """A 3-wide single-arm action must not be indexed as 6 channels per arm."""
-    from diffusion_policy.irum.spec import from_resolution
+    from diffusion_policy.drim.spec import from_resolution
     res = FL.resolve(_packed_source(arm2_live=False), n_arms=2,
                      layout=FL.SMOKE_LAYOUT, warn=False)
     spec = from_resolution(res, act_width=3, n_declared=1)
@@ -633,7 +664,7 @@ def test_action_width_comes_from_the_recording_not_a_constant():
 
 def test_short_episodes_are_named_and_excluded():
     """A two-step aborted recording still counts as an episode until it isn't."""
-    from diffusion_policy.irum.dataset import short_episodes
+    from diffusion_policy.drim.dataset import short_episodes
 
     class _Eps:
         def __init__(self, lens):
@@ -658,7 +689,7 @@ def test_apply_delta_inverts_state_delta():
     Quaternions are the reason this is not just addition: the delta of a rotation
     is a rotation vector, so advancing composes rather than adds.
     """
-    from diffusion_policy.irum import dynamics as D
+    from diffusion_policy.drim import dynamics as D
     mods = [("p", (0, 3), 3, "linear"), ("q", (3, 7), 3, "quat")]
     g = torch.Generator().manual_seed(0)
     y0 = torch.randn(5, 7, generator=g); y0[:, 3:] /= y0[:, 3:].norm(dim=-1, keepdim=True)
@@ -672,7 +703,7 @@ def test_apply_delta_inverts_state_delta():
 
 
 def test_detectors_flag_a_dynamics_worse_than_doing_nothing():
-    from diffusion_policy.irum import diagnose as DG
+    from diffusion_policy.drim import diagnose as DG
     v = DG.detectors({"dyn": {"skill": -1.55}})
     assert v and v[0].startswith("FAIL")
     assert "model error" in v[0]
@@ -680,13 +711,13 @@ def test_detectors_flag_a_dynamics_worse_than_doing_nothing():
 
 
 def test_detectors_flag_both_ends_of_the_authority_range():
-    from diffusion_policy.irum import diagnose as DG
+    from diffusion_policy.drim import diagnose as DG
     assert "authority unused" in DG.detectors({"B1": {"saturation": 0.0}})[0]
     assert "too small" in DG.detectors({"B1": {"saturation": 0.9}})[0]
     assert DG.detectors({"B1": {"saturation": 0.1}})[0].startswith("OK")
 
 
 def test_detectors_flag_a_surprise_that_shifts_out_of_distribution():
-    from diffusion_policy.irum import diagnose as DG
+    from diffusion_policy.drim import diagnose as DG
     v = DG.detectors({"diagnostics": {"surprise_shift": {"p99_ratio": 28.9}}})
     assert v[0].startswith("WARN") and "never saw in training" in v[0]

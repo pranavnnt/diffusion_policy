@@ -1,10 +1,10 @@
-"""Staged IRUM training: ``B0 -> B1 -> D2``, offline, no environment.
+"""Staged DRIM training: ``B0 -> B1 -> D2``, offline, no environment.
 
 Budgets, losses, batch order, cached nominal draws and the snapshot grid follow
 ``cap_constraint_benchmark/liftoff_v6_image/train_lo6.py``.  Two structural
 differences, both forced and both marked at the site:
 
-* selection is :mod:`diffusion_policy.irum.selection` — an epoch grid reported by
+* selection is :mod:`diffusion_policy.drim.selection` — an epoch grid reported by
   ``last-k`` — because there is no ``EnvRunner`` to rank snapshots with;
 * the ``D2`` dynamics is trained here as stage ``dyn`` rather than shipped as a
   separate entry point, since it is small and its whole purpose is to feed the
@@ -28,14 +28,14 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 import numpy as np
 import torch
 
-from diffusion_policy.irum import diagnose as DG
-from diffusion_policy.irum import dynamics as DY
-from diffusion_policy.irum import policy as PL
-from diffusion_policy.irum import selection as SEL
-from diffusion_policy.irum import fields as F
-from diffusion_policy.irum.dataset import (ChunkNormaliser, load_split,
+from diffusion_policy.drim import diagnose as DG
+from diffusion_policy.drim import dynamics as DY
+from diffusion_policy.drim import policy as PL
+from diffusion_policy.drim import selection as SEL
+from diffusion_policy.drim import fields as F
+from diffusion_policy.drim.dataset import (ChunkNormaliser, load_split,
                                            action_residual_demand)
-from diffusion_policy.irum.spec import (IrumSpec, DRESSING_HORIZONS,
+from diffusion_policy.drim.spec import (DrimSpec, DRESSING_HORIZONS,
                                         DRESSING_CAMERAS,
                                         fast_limits_from_fraction,
                                         fast_frac_from_demand)
@@ -106,7 +106,7 @@ def _batch(d: Dict[str, torch.Tensor], sel, device: str) -> Dict[str, torch.Tens
     return {k: v[sel].to(device) for k, v in d.items()}
 
 
-def _ctx(model: PL.IrumPolicy, b: Dict[str, torch.Tensor]) -> torch.Tensor:
+def _ctx(model: PL.DrimPolicy, b: Dict[str, torch.Tensor]) -> torch.Tensor:
     rgb = ({c: b[f"rgb2_{c}"] for c in model.spec.cameras}
            if model.spec.is_image else None)
     return model.context(rgb, b["prop2"], b.get("wrench2"))
@@ -117,7 +117,7 @@ def _ctx(model: PL.IrumPolicy, b: Dict[str, torch.Tensor]) -> torch.Tensor:
 # --------------------------------------------------------------------------- #
 
 
-def train_dynamics(spec: IrumSpec, tr, va, seed: int, epochs: int, device: str,
+def train_dynamics(spec: DrimSpec, tr, va, seed: int, epochs: int, device: str,
                    log: Callable[[str], None], mods) -> Dict[str, Any]:
     """Fit the delta dynamics whose residual becomes the message.
 
@@ -241,36 +241,52 @@ def _valid_flow(model, va, device, batch=64, n_repeat=2, seed=0) -> float:
     return tot / max(n, 1.0)
 
 
-@torch.no_grad()
-def _valid_action_mse(model, va, device, batch=64, seed=NOISE_SEED,
-                      message_of=None) -> float:
-    """Offline MSE of the **executed prefix** against the demonstrated action.
+#: Draws averaged into the reported action error.  The nominal is a *sample*,
+#: so one draw is a noisy read of the policy; four is enough to make the number
+#: stable without making validation the expensive part of a run.
+N_EVAL_DRAWS = 4
 
-    Logged for every stage including ``B0``, where the executed action is the
-    nominal.  This is the closest offline stand-in for what the robot receives,
-    which flow loss is not — but it is a diagnostic, never a selector; see
-    :mod:`diffusion_policy.irum.selection` for why.
+
+@torch.no_grad()
+def action_mse(model, va, device, batch=64, seed=NOISE_SEED,
+               message_of=None, n_draws: int = N_EVAL_DRAWS) -> float:
+    """Error of the **executed prefix** against the demonstrated action.
+
+    The one metric every stage is scored by, computed by this one function with
+    the same draws and the same seed. ``B0`` has no corrector, so its executed
+    action is the nominal; ``D2`` gets its message. That is the whole difference
+    between the stages, which is what makes ``D2 - B1`` a comparison rather than
+    two different rulers — an earlier version scored ``B1`` with a separate
+    routine over cached nominals and the two numbers were not on the same scale.
+
+    It is the closest offline stand-in for what the robot receives, and on this
+    track it is also the default **selector**: there is no rollout to rank with
+    and one checkpoint has to be chosen anyway.
     """
     model.eval()
     e = model.exec_horizon
-    g = torch.Generator(device="cpu").manual_seed(seed)
     tot = n = 0.0
-    for i in range(0, len(va["target"]), batch):
-        sel = slice(i, i + batch)
-        b = _batch(va, sel, device)
-        noise = torch.randn(len(b["target"]), model.horizon, model.act_dim,
-                            generator=g).to(device)
-        msg = message_of(model, b) if message_of is not None else None
-        ctx = _ctx(model, b)
-        nominal = model.sample_chunk(ctx, msg, noise)
-        r = model.residual_prefix(nominal, b["step_prop"], b.get("step_wrench"),
-                                  msg)
-        exe = torch.clamp(nominal[:, :e] + r, -1.0, 1.0)
-        tot += torch.nn.functional.mse_loss(
-            exe, b["target"][:, :e]).item() * len(b["target"])
-        n += len(b["target"])
+    for d in range(n_draws):
+        g = torch.Generator(device="cpu").manual_seed(seed + 1000 * d)
+        for i in range(0, len(va["target"]), batch):
+            sel = slice(i, i + batch)
+            b = _batch(va, sel, device)
+            noise = torch.randn(len(b["target"]), model.horizon, model.act_dim,
+                                generator=g).to(device)
+            msg = message_of(model, b) if message_of is not None else None
+            ctx = _ctx(model, b)
+            nominal = model.sample_chunk(ctx, msg, noise)
+            r = model.residual_prefix(nominal, b["step_prop"],
+                                      b.get("step_wrench"), msg)
+            exe = torch.clamp(nominal[:, :e] + r, -1.0, 1.0)
+            tot += torch.nn.functional.mse_loss(
+                exe, b["target"][:, :e]).item() * len(b["target"])
+            n += len(b["target"])
     model.train()
     return tot / max(n, 1.0)
+
+
+_valid_action_mse = action_mse                       # older call sites
 
 
 def train_b0(spec, tr, va, seed, epochs, device, log) -> Dict[str, Any]:
@@ -323,6 +339,36 @@ def cache_nominals(model, data, draws, device, batch=64, seed=NOISE_SEED):
             out[d, sel] = model.sample_chunk(_ctx(model, b),
                                              None, noise[sel].to(device)).cpu()
     return out
+
+
+@torch.no_grad()
+def measured_residual_demand(b0, tr, spec, device, batch=64,
+                             n_draws: int = N_EVAL_DRAWS,
+                             seed: int = NOISE_SEED) -> Dict[str, Any]:
+    """What the corrector would actually have to supply, given a trained ``B0``.
+
+    ``|target - nominal|`` over the executed prefix, where ``nominal`` is B0's
+    own sampled chunk. This is the real quantity; the pre-training
+    ``vs_chunk_mean`` proxy in the loader stands in for it before B0 exists and
+    underestimated it badly on the 0909 recording — a ceiling set from the proxy
+    left the corrector pinned at 60 % saturation for the whole of B1.
+    """
+    b0.eval()
+    e = b0.exec_horizon
+    out = []
+    for d in range(n_draws):
+        g = torch.Generator(device="cpu").manual_seed(seed + 1000 * d)
+        for i in range(0, len(tr["target"]), batch):
+            sel = slice(i, i + batch)
+            b = _batch(tr, sel, device)
+            noise = torch.randn(len(b["target"]), b0.horizon, b0.act_dim,
+                                generator=g).to(device)
+            nom = b0.sample_chunk(_ctx(b0, b), None, noise)
+            out.append((b["target"][:, :e] - nom[:, :e]).abs().cpu().numpy())
+    b0.train()
+    a = np.concatenate(out).reshape(-1, spec.act_dim)
+    return {f"p{q}": [round(float(v), 5) for v in np.percentile(a, q, axis=0)]
+            for q in (50, 90, 95, 99, 100)}
 
 
 def _fast_loss(model, b, nominal):
@@ -403,10 +449,13 @@ def train_b1(b0, spec, tr, va, seed, epochs, device, log) -> Dict[str, Any]:
             tot += loss.detach().item() * len(sel)
         sched.step()
         vl, sat = _valid_fast(model, va, nom_va, device)
-        if bank.observe(model, ep + 1, val_loss=vl, action_mse=vl,
+        #: ``vl`` is B1's own objective (cached nominals, no message); the
+        #: comparable number is ``am``, computed exactly as B0's and D2's are.
+        am = action_mse(model, va, device)
+        if bank.observe(model, ep + 1, val_loss=vl, action_mse=am,
                         train_loss=tot / n, saturation=sat):
             log(f"      s{seed}/B1 epoch {ep + 1}/{epochs} train={tot / n:.5f} "
-                f"val={vl:.5f} saturated={sat:.1%} [snapshot]")
+                f"val={vl:.5f} act_mse={am:.5f} saturated={sat:.1%} [snapshot]")
     _, sat = _valid_fast(model, va, nom_va, device)
     return {"model": model, "bank": bank, "nominal_draw_spread": spread,
             "saturation": sat,
@@ -499,7 +548,7 @@ def train_d2(b1, spec, tr, va, seed, epochs, device, message_in_dims, log
 
 
 @torch.no_grad()
-def check_exact_null(d2: PL.IrumPolicy, b: Dict[str, torch.Tensor],
+def check_exact_null(d2: PL.DrimPolicy, b: Dict[str, torch.Tensor],
                      atol: float = 1e-5) -> Dict[str, float]:
     """``D2`` with a null message must reproduce ``B1`` exactly.
 
@@ -541,7 +590,7 @@ def run(zarr_path: Any, out_dir: str, seed: int = 0,
         fast_frac: Any = "auto",
         require: Sequence[str] = (), action_key: str = "action",
         image_size: Optional[Tuple[int, int]] = (240, 320),
-        estimator: str = f"last{SEL.LAST_K}", keep_grid: bool = True,
+        estimator: str = SEL.DEFAULT_ESTIMATOR, keep_grid: bool = True,
         diagnose: bool = True, diag_steps: int = 32, diag_starts: int = 48,
         log: Callable[[str], None] = print) -> Dict[str, Any]:
     unknown = [s for s in stages if s not in STAGES]
@@ -590,17 +639,19 @@ def run(zarr_path: Any, out_dir: str, seed: int = 0,
             f"(active: {act['active']})")
     demand = action_residual_demand(tr, spec)
 
+    auto_frac = (fast_frac == "auto")
     if fast_frac is not None:
-        if fast_frac == "auto":
+        if auto_frac:
+            #: A provisional ceiling from the pre-training proxy, replaced by the
+            #: measured one as soon as B0 exists (see below).  Kept only so the
+            #: spec is well-formed if B0 is skipped.
             fast_frac = fast_frac_from_demand(demand, act["active"])
-            log(f"[authority] --fast-frac auto -> {fast_frac:.3f} of full "
-                f"command, from the p95 correction the demonstrations require")
         #: Only channels the demonstrations actually move get authority.  A
         #: ceiling on a channel that is identically zero in the data is
         #: authority over something the corrector can never have learned, and
         #: it is free to write there at rollout; a zero ceiling makes the
         #: channel structurally silent instead.
-        spec = IrumSpec(**{**spec.to_dict(),
+        spec = DrimSpec(**{**spec.to_dict(),
                            "fast_limits": fast_limits_from_fraction(
                                float(fast_frac), spec.act_scale or
                                tuple([1.0] * spec.act_dim),
@@ -661,7 +712,7 @@ def run(zarr_path: Any, out_dir: str, seed: int = 0,
                    os.path.join(out_dir, f"dynamics_seed{seed}.pt"))
 
     t_tr, t_va = _to_torch(tr, device), _to_torch(va, device)
-    models: Dict[str, PL.IrumPolicy] = {}
+    models: Dict[str, PL.DrimPolicy] = {}
 
     def _save(stage: str, r: Dict[str, Any]) -> Dict[str, Any]:
         sel = SEL.save_selected(
@@ -674,12 +725,13 @@ def run(zarr_path: Any, out_dir: str, seed: int = 0,
         #: checkpoint is 100+ MB and a plot should not require loading one.
         out["curve"] = r["bank"].curve
         out["snapshot_epochs"] = list(r["bank"].grid)
-        msg = (f"      {stage} {estimator} -> epochs {sel['selected_epochs']}")
-        if "bestval_epoch" in sel:
-            agree = "same" if sel["agrees_with_bestval"] else "DIFFERS"
-            msg += (f"; lowest val_loss was epoch {sel['bestval_epoch']} "
-                    f"({agree})")
-        log(msg)
+        picks = sel.get("would_pick") or {}
+        log(f"      {stage} selected epoch(s) {sel['selected_epochs']} "
+            f"by {estimator}"
+            + ("" if sel.get("criteria_agree")
+               else "   other criteria would pick "
+                    + ", ".join(f"{k}={v}" for k, v in picks.items()
+                                if v not in sel["selected_epochs"])))
         if "overfit_warning" in sel:
             log(f"      WARNING {sel['overfit_warning']}")
         return out
@@ -689,6 +741,22 @@ def run(zarr_path: Any, out_dir: str, seed: int = 0,
         r = train_b0(spec, t_tr, t_va, seed, epochs["B0"], device, log)
         models["B0"] = r.pop("model")
         summary["B0"] = _save("B0", r)
+
+    if "B1" in stages and auto_frac and "B0" in models:
+        #: Now that B0 exists, the ceiling comes from the residual it actually
+        #: leaves rather than from a proxy computed before any model was trained.
+        md = measured_residual_demand(models["B0"], t_tr, spec, device)
+        frac = float(min(max(max(md["p95"][i] for i in act["active"]), 0.02), 0.5))
+        summary["measured_residual_demand"] = md
+        log(f"[authority] measured from B0: p95 {md['p95']}  p99 {md['p99']}")
+        log(f"[authority] ceiling {fast_frac:.4f} (proxy) -> {frac:.4f} (measured)")
+        spec = IrumSpec(**{**spec.to_dict(),
+                           "fast_limits": fast_limits_from_fraction(
+                               frac, spec.act_scale or
+                               tuple([1.0] * spec.act_dim),
+                               active=act["active"])})
+        summary["fast_frac"] = frac
+        summary["spec"] = spec.to_dict()
 
     if "B1" in stages:
         log("[stage] B1")
@@ -777,7 +845,7 @@ def main(argv=None) -> int:
                          "comma-separated list of either")
     ap.add_argument("--out", default=None,
                     help="run directory; defaults to "
-                         "data/outputs/irum_<timestamp>")
+                         "data/outputs/drim_<timestamp>")
     ap.add_argument("--quick", action="store_true",
                     help="short budgets for a plumbing check, not a result")
     ap.add_argument("--seed", type=int, default=0)
@@ -811,14 +879,16 @@ def main(argv=None) -> int:
                          "message reliance)")
     ap.add_argument("--diag-steps", type=int, default=32)
     ap.add_argument("--diag-starts", type=int, default=48)
-    ap.add_argument("--estimator", default=f"last{SEL.LAST_K}",
+    ap.add_argument("--estimator", default=SEL.DEFAULT_ESTIMATOR,
                     choices=list(SEL.ESTIMATORS),
-                    help="which grid epochs the saved checkpoint averages: "
-                         "last3 (default), last5, last1 (final snapshot), or "
-                         "bestval (lowest validation loss — the ordinary "
-                         "choice, at the cost of selection noise). Whichever "
-                         "you pick, the run reports what bestval would have "
-                         "chosen so the disagreement is visible.")
+                    help="offline criterion the deployed checkpoint is chosen "
+                         "by: action_mse (default; the executed-prefix error, "
+                         "the same metric for every stage), val_loss, or "
+                         "divergence (roll each candidate through the dynamics "
+                         "-- the only one that sees error compound). last1 / "
+                         "last3 / last5 select on nothing and are kept only to "
+                         "reproduce earlier runs. Every criterion's pick is "
+                         "reported whichever is used.")
     ap.add_argument("--no-keep-grid", action="store_true",
                     help="do not store the epoch grid in the checkpoint; saves "
                          "disk, but the selection can no longer be re-derived")
@@ -831,7 +901,7 @@ def main(argv=None) -> int:
                          "sit at 0.016 (cap) and 0.16 (drawer).")
     a = ap.parse_args(argv)
     out = a.out or os.path.join(
-        "data", "outputs", "irum_" + time.strftime("%Y%m%d_%H%M%S"))
+        "data", "outputs", "drim_" + time.strftime("%Y%m%d_%H%M%S"))
     ep = {"dyn": a.epochs_dyn, "B0": a.epochs_b0,
           "B1": a.epochs_b1, "D2": a.epochs_d2}
     if a.quick:

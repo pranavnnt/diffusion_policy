@@ -50,9 +50,9 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 import numpy as np
 import torch
 
-from diffusion_policy.irum import dynamics as DY
-from diffusion_policy.irum import fields as F
-from diffusion_policy.irum.spec import IrumSpec
+from diffusion_policy.drim import dynamics as DY
+from diffusion_policy.drim import fields as F
+from diffusion_policy.drim.spec import DrimSpec
 
 
 def _ctx(model, rgb, prop2, wrench2):
@@ -60,7 +60,7 @@ def _ctx(model, rgb, prop2, wrench2):
 
 
 @torch.no_grad()
-def rollout(model, dyn: DY.FrozenDynamics, mods, eps, norm, spec: IrumSpec,
+def rollout(model, dyn: DY.FrozenDynamics, mods, eps, norm, spec: DrimSpec,
             episodes: Sequence[int], n_steps: int = 32, n_starts: int = 64,
             device: str = "cpu", seed: int = 0, use_demo_actions: bool = False,
             message_of: Optional[Callable] = None) -> Dict[str, np.ndarray]:

@@ -1,78 +1,46 @@
-"""Checkpoint selection with no environment to roll out in.
+"""Choosing one checkpoint to put on the robot, with no rollout to rank by.
 
-dap's protocol (``benchmarks/common/selection.py``, and the reasoning in
-``results/CHECKPOINT_SELECTION_NOTES.md``) is:
+This is the **real-world** track: a run ends with exactly one set of weights
+that gets driven on hardware. That constraint is what shapes everything here,
+and it is stronger than the one dap works under.
 
-    training writes snapshots on an epoch grid; a **separate** stage rolls every
-    snapshot out on a fixed bank of start states, ranks by success, keeps the top
-    K plus the latest, and reports ``best`` / ``last3`` / ``last5``.  Validation
-    loss is logged and never selected on.
+**Why dap's ``last-k`` does not carry over.** In dap, ``last3`` averages the
+*rollout success* of the final three snapshots. That is an estimator of how well
+a training recipe does, computed by testing three checkpoints. Here nothing can
+be tested: there is no ``EnvRunner``, and on hardware you get one deployment,
+not three. So "the last three" names no measurement — it is just "roughly the
+end of training", and this repository's own 0909 run shows what that costs: D2's
+held-out loss bottoms at epoch 29 and rises steadily to epoch 150, so a tail
+average deploys the overfitted model on purpose.
 
-That protocol exists because the selector turned out to be a first-order
-experimental choice rather than a formality.  On the one round that kept a grid,
-moving from "restore the lowest-val-loss epoch" to a last-3 average shifted arms
-by -0.044 to **+0.130** success and turned the round's headline from -0.151 to
--0.053 with a CI covering zero — larger than nearly every effect that project
-reports.  So "just use val loss" is not a neutral fallback.
+**So the checkpoint has to be selected offline, and selected well.** The
+criteria available, in increasing fidelity to what the robot will do:
 
-**What does not survive the port.**  The dressing task here has no ``EnvRunner``
-— the real rig is a physical robot — so the ranking stage is unavailable and
-nothing can be scored by success.
+``val_loss``     the stage's own training objective on held-out episodes.
+                 Cheapest, and furthest from deployment — for the slow policy it
+                 is a flow-matching loss, not an action error.
+``action_mse``   error of the **executed prefix** against the demonstrated
+                 action, averaged over several noise draws. The same quantity
+                 for every stage, which is what makes ``D2 - B1`` a comparison
+                 rather than two different rulers.
+``divergence``   the policy rolled forward through the learned dynamics, scored
+                 on how far the state drifts from the demonstration. The only
+                 criterion here that sees error *compound*, which is the failure
+                 mode single-step metrics are blind to. Costs a short rollout per
+                 candidate, so it is opt-in.
 
-**What does survive.**  Read dap's :func:`select_epochs` closely and the
-estimators split in two:
+**Selection noise is the thing to control, not to avoid by refusing to select.**
+An argmin over a grid of noisy estimates is biased low and, on a plateau, picks
+near-randomly within it — dap measured epoch-to-epoch spreads of 0.011-0.040 in
+success. The answer is to smooth the *criterion* before taking the argmin
+(``smooth``: rank each epoch by the mean of its neighbours) rather than to
+average the *weights* and hope. Smoothing keeps the result a real, single,
+deployable checkpoint.
 
-    ``best`` / ``top-k``    rank by rollout success        — unavailable here
-    ``last-k`` / ``all``    **rank nothing**               — pure epoch position
-
-``last-k`` never consults a score, which is why it survives the absence of a
-rollout, and it is the estimator that beat val-loss selection in dap's own
-measurement.
-
-**One substitution, stated plainly because it is not a like-for-like port.**  In
-dap, ``last3`` is a *reporting* estimator: it averages the rollout **metrics** of
-the final three snapshots, while the checkpoint actually promoted is chosen by
-rollout top-1.  Here there is no metric to average and no ranking to promote by,
-so ``last-k`` instead names a **weight average** of those snapshots — one
-deployable checkpoint, constructed without consulting any score.  That is
-standard practice (SWA / model soups) and it is sound in this setting for
-reasons worth checking rather than assuming: the points are consecutive grid
-epochs of one run under a cosine schedule, so they sit in one basin; the
-normalisation layers are GroupNorm, so there are no batch statistics to
-invalidate; and the non-parameter buffers that travel in the state dict
-(``obs_mean``/``obs_std``, ``fast.max_residual``) are constants, so averaging
-returns them unchanged.  Averaging across **seeds** or **stages** is not sound
-and :func:`average_states` cannot do it — it only ever sees one bank.
-
-``--estimator last1`` is the conservative alternative: the final snapshot alone,
-no averaging.
-
-So the offline protocol is the online one with the ranking stage deleted:
-
-    ==========================  =============================================
-    training budget             fixed in advance, never tuned on the result
-    snapshot period             every ``ROLLOUT_EVERY`` epochs, whole run
-    reported                    ``last3`` (primary), ``last5``, ``all``
-    validation loss             logged, never selected on
-    offline action MSE          logged, never selected on
-    stages                      the same rule at B0, B1 and D2
-    handoff                     the checkpoint frozen into the next stage is
-                                the one the table reports
-    ==========================  =============================================
-
-**Why not just select on the offline action MSE.**  It is tempting — it is the
-deployed quantity, unlike flow loss — and it is computed here and reported.  But
-dap measured offline loss ordering these variants across a 3 % spread against a
-0.44 spread in success, i.e. it barely orders them at all, and selecting on a
-metric that does not order is how you get a selector whose variance exceeds the
-effect.  It is a diagnostic here for the same reason val loss is.
-
-**What last-K assumes, stated so it can be checked.**  That the run has
-plateaued: averaging the tail is only sound where the tail is flat.  dap found
-3 of 9 arm-seeds still climbing at 150 epochs and recorded it as an observation
-rather than a gate.  :func:`tail_slope` computes the same number here — check it
-before believing a last-K number, and extend the budget rather than moving the
-estimator if the tail is still rising.
+Whatever criterion is chosen, every other one's pick is recorded beside it, so a
+disagreement is visible as data. On the 0909 run all three stages disagreed
+between ``val_loss`` and the tail, which is exactly the signal that the tail was
+the wrong place to look.
 """
 
 from __future__ import annotations
@@ -89,9 +57,18 @@ import torch
 #: plateau starts differs by seed and is not knowable in advance.
 SNAPSHOT_EVERY = 10
 LAST_K = 3
-ESTIMATORS = ("last3", "last5", "last1", "bestval", "all")
+#: Criteria that pick one checkpoint offline.  ``bestval`` is kept as an alias
+#: for ``val_loss`` because earlier runs recorded it under that name.
+CRITERIA = ("action_mse", "val_loss", "divergence")
+#: Everything selectable.  ``last1`` is the final snapshot; ``last3``/``last5``
+#: weight-average the tail and are kept only to reproduce an earlier run — they
+#: select on nothing, which on a rising tail means deploying the overfit.
+ESTIMATORS = CRITERIA + ("bestval", "last1", "last3", "last5", "all")
+DEFAULT_ESTIMATOR = "action_mse"
+#: grid points either side of a candidate whose criterion is averaged into it
+SMOOTH = 1
 #: Nothing here ranks by a score; recorded so a checkpoint says so on its face.
-SELECTION_RULE = "offline_last_k"
+SELECTION_RULE = "offline_criterion"
 
 
 def snapshot_grid(epochs: int, every: int = SNAPSHOT_EVERY) -> Tuple[int, ...]:
@@ -162,56 +139,73 @@ class SnapshotBank:
                 "selection": {"rule": SELECTION_RULE,
                               "snapshot_every": SNAPSHOT_EVERY,
                               "estimators": list(ESTIMATORS),
-                              "last_k": LAST_K,
+                              "default": DEFAULT_ESTIMATOR,
                               "rollout_available": False,
                               "val_loss_used_for_selection": False,
                               "action_mse_used_for_selection": False}}
 
 
-def select_epochs(epochs: Sequence[int], estimator: str = f"last{LAST_K}",
+def _criterion_key(estimator: str) -> str:
+    return "val_loss" if estimator == "bestval" else estimator
+
+
+def smoothed(curve: Sequence[Dict[str, Any]], key: str, grid: Sequence[int],
+             smooth: int = SMOOTH) -> Dict[int, float]:
+    """Each grid epoch scored by the mean of ``key`` over its neighbours.
+
+    The argmin of a raw noisy curve is biased low and, on a plateau, arbitrary.
+    Averaging the *criterion* over a small window damps that while still naming
+    a single real checkpoint — unlike averaging the weights, which names one
+    that was never evaluated.
+    """
+    g = sorted(int(e) for e in grid)
+    have = {int(r["epoch"]): float(r[key]) for r in curve if key in r}
+    scored: Dict[int, float] = {}
+    for i, e in enumerate(g):
+        lo, hi = max(0, i - smooth), min(len(g), i + smooth + 1)
+        vals = [have[x] for x in g[lo:hi] if x in have]
+        if vals:
+            scored[e] = float(np.mean(vals))
+    return scored
+
+
+def select_epochs(epochs: Sequence[int], estimator: str = DEFAULT_ESTIMATOR,
                   curve: Optional[Sequence[Dict[str, Any]]] = None,
-                  key: str = "val_loss") -> List[int]:
-    """Which grid epochs an estimator reports.
+                  key: str = "val_loss", smooth: int = SMOOTH,
+                  scores: Optional[Dict[int, float]] = None) -> List[int]:
+    """Which grid epochs the saved checkpoint is built from.
 
-    ``last-k`` and ``all`` rank nothing, which is why they survive the absence of
-    a rollout.
+    A criterion returns **one** epoch — the checkpoint that would be deployed.
+    ``last{k}`` returns k, and the caller then weight-averages them; that path
+    exists to reproduce an earlier run, not because it selects anything.
 
-    ``bestval`` is the ordinary thing — restore the epoch with the lowest
-    validation loss — and it is offered rather than forbidden, because the case
-    against it is quantitative, not a matter of principle, and it is the case
-    the rest of this repository follows.  What it costs is **selection noise**:
-    an argmin over a grid of noisy estimates is biased low and, on a plateau,
-    picks largely at random within it.  dap measured the epoch-to-epoch spread
-    at 0.011-0.040 success with the grid maximum carrying +0.023-0.041 of upward
-    bias, and found last-3 the better estimator of rollout success.  With a
-    validation set of two or three episodes that noise is larger here, not
-    smaller.
-
-    The honest summary: on a plateau the two agree to within the noise and
-    ``last-k`` has lower variance; off a plateau ``last-k`` is averaging a tail
-    that should not be averaged, and validation loss is the thing that tells you
-    so.  Use :func:`overfit_warning` to find out which case you are in rather
-    than assuming.
-
-    A rollout-ranked estimator still raises — that one is unavailable, not merely
-    discouraged.
+    ``scores`` supplies an externally computed criterion (``divergence``, which
+    needs a rollout per candidate and so cannot be read off the training curve).
+    Lower is better for every criterion here.
     """
     eps = sorted(int(e) for e in epochs)
     if estimator == "all":
         return eps
     if estimator.startswith("last"):
         return eps[-int(estimator[4:] or LAST_K):]
-    if estimator == "bestval":
-        if not curve:
-            raise ValueError("bestval needs the training curve")
-        scored = [(r[key], int(r["epoch"])) for r in curve
-                  if key in r and int(r["epoch"]) in set(eps)]
-        if not scored:
-            raise ValueError(f"no grid epoch carries {key!r}")
-        return [min(scored)[1]]
-    raise ValueError(
-        f"estimator {estimator!r} ranks checkpoints by rollout success, which "
-        f"is unavailable without an EnvRunner; use one of {ESTIMATORS}")
+    if estimator == "divergence":
+        if not scores:
+            raise ValueError(
+                "the divergence criterion needs a score per candidate epoch; "
+                "it is computed by rolling each one out through the dynamics")
+        return [min(scores, key=lambda e: scores[e])]
+    k = _criterion_key(estimator)
+    if k not in CRITERIA and estimator != "bestval":
+        raise ValueError(
+            f"unknown estimator {estimator!r}; have {ESTIMATORS}. Estimators "
+            f"that rank by rollout success are unavailable — there is no "
+            f"environment to roll out in.")
+    if not curve:
+        raise ValueError(f"the {estimator!r} criterion needs the training curve")
+    sc = smoothed(curve, k, eps, smooth)
+    if not sc:
+        raise ValueError(f"no grid epoch carries {k!r}")
+    return [min(sc, key=lambda e: sc[e])]
 
 
 def overfit_warning(bank: "SnapshotBank", key: str = "val_loss",
@@ -286,16 +280,18 @@ def tail_slope(curve: Sequence[Dict[str, Any]], key: str, n: int = 5,
     return float(np.polyfit(x, y, 1)[0] * 10.0)
 
 
-def selection_note(bank: SnapshotBank, estimator: str = f"last{LAST_K}",
-                   diagnostics: Sequence[str] = ("val_loss", "action_mse")
-                   ) -> Dict[str, Any]:
+def selection_note(bank: SnapshotBank, estimator: str = DEFAULT_ESTIMATOR,
+                   diagnostics: Sequence[str] = ("val_loss", "action_mse"),
+                   smooth: int = SMOOTH,
+                   scores: Optional[Dict[int, float]] = None) -> Dict[str, Any]:
     """What a checkpoint records about how it was chosen — and how it was not.
 
     The historical keys (``best_epoch`` and the minimum of each diagnostic) are
     kept and clearly marked unused, so the number the old protocol *would* have
     picked stays visible on the record next to the one that was.
     """
-    eps = select_epochs(sorted(bank.states), estimator, curve=bank.curve)
+    eps = select_epochs(sorted(bank.states), estimator, curve=bank.curve,
+                        smooth=smooth, scores=scores)
     note: Dict[str, Any] = {
         "rule": SELECTION_RULE, "estimator": estimator,
         "selected_epochs": eps, "grid": list(bank.grid),
@@ -304,12 +300,19 @@ def selection_note(bank: SnapshotBank, estimator: str = f"last{LAST_K}",
     #: What the ordinary selector would have picked, recorded next to what was,
     #: so the disagreement is visible every run instead of being a matter of
     #: opinion.
-    try:
-        note["bestval_epoch"] = select_epochs(
-            sorted(bank.states), "bestval", curve=bank.curve)[0]
-        note["agrees_with_bestval"] = note["bestval_epoch"] in eps
-    except ValueError:
-        pass
+    #: Every other criterion's pick, recorded beside the one that was used, so
+    #: a disagreement is data rather than an opinion.
+    note["would_pick"] = {}
+    for alt in ("val_loss", "action_mse", "last1"):
+        try:
+            note["would_pick"][alt] = select_epochs(
+                sorted(bank.states), alt, curve=bank.curve, smooth=smooth)[0]
+        except (ValueError, KeyError):
+            pass
+    if scores:
+        note["would_pick"]["divergence"] = min(scores, key=lambda e: scores[e])
+        note["divergence_scores"] = {int(k): float(v) for k, v in scores.items()}
+    note["criteria_agree"] = len(set(note["would_pick"].values())) == 1
     w = overfit_warning(bank)
     if w:
         note["overfit_warning"] = w
@@ -329,8 +332,10 @@ def selection_note(bank: SnapshotBank, estimator: str = f"last{LAST_K}",
 
 
 def save_selected(path: str, bank: SnapshotBank, variant: str, spec_dict: Dict[str, Any],
-                  estimator: str = f"last{LAST_K}", extra: Optional[Dict[str, Any]] = None,
-                  keep_grid: bool = True) -> Dict[str, Any]:
+                  estimator: str = DEFAULT_ESTIMATOR,
+                  extra: Optional[Dict[str, Any]] = None,
+                  keep_grid: bool = True, smooth: int = SMOOTH,
+                  scores: Optional[Dict[int, float]] = None) -> Dict[str, Any]:
     """Write the ``last-k`` checkpoint, with the grid it was built from beside it.
 
     ``keep_grid=False`` drops the snapshots and keeps only the averaged weights.
@@ -338,14 +343,16 @@ def save_selected(path: str, bank: SnapshotBank, variant: str, spec_dict: Dict[s
     models — at the cost of being unable to re-derive the selection later, which
     is the one thing keeping the grid buys.
     """
-    eps = select_epochs(sorted(bank.states), estimator, curve=bank.curve)
+    eps = select_epochs(sorted(bank.states), estimator, curve=bank.curve,
+                        smooth=smooth, scores=scores)
     payload = {
         "variant": variant,
         "spec": spec_dict,
         "state_dict": average_states(bank, eps),
         "trainable_only": bank.parent_keys is not None,
         "parent_keys": bank.parent_keys,
-        "selection": selection_note(bank, estimator),
+        "selection": selection_note(bank, estimator, smooth=smooth,
+                                    scores=scores),
         "summary": bank.summary(),
     }
     if keep_grid:

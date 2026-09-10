@@ -1,4 +1,4 @@
-"""Chunk assembly for IRUM, from a ``ReplayBuffer`` zarr.
+"""Chunk assembly for DRIM, from a ``ReplayBuffer`` zarr.
 
 dap's loaders (``liftoff_v4/loader_lo4.py``, ``liftoff_v6_image/loader_lo6.py``)
 cut fixed-length episodes into a fixed number of chunks at fixed boundaries,
@@ -31,8 +31,8 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 import numpy as np
 
 from diffusion_policy.common.replay_buffer import ReplayBuffer
-from diffusion_policy.irum import fields as F
-from diffusion_policy.irum.spec import IrumSpec, from_resolution
+from diffusion_policy.drim import fields as F
+from diffusion_policy.drim.spec import DrimSpec, from_resolution
 
 
 class ChunkNormaliser:
@@ -140,7 +140,7 @@ def discover_zarrs(path: Any) -> List[str]:
     raise FileNotFoundError(f"{p} is neither a zarr store nor a directory")
 
 
-class IrumEpisodes:
+class DrimEpisodes:
     """Episodes read out of a ``ReplayBuffer`` zarr and resolved against the schema.
 
     Resolution happens **once, over the whole buffer**, so the presence report
@@ -297,7 +297,7 @@ class IrumEpisodes:
         if dt.max() > 3.0 * dt.min():
             warnings.warn(
                 f"control period varies {dt.min():.3f}-{dt.max():.3f} s "
-                f"(mean {dt.mean():.3f}, ~{1 / dt.mean():.1f} Hz). IRUM assumes a "
+                f"(mean {dt.mean():.3f}, ~{1 / dt.mean():.1f} Hz). DRIM assumes a "
                 f"slow level replanning every exec_horizon steps and a fast level "
                 f"correcting every step; at this jitter those are not separated in "
                 f"time. The dynamics is conditioned on dt, but the horizons mean "
@@ -331,7 +331,7 @@ class IrumEpisodes:
                 "dead": [int(i) for i in np.nonzero(~moves)[0]]}
 
 
-def decision_steps(n: int, spec: IrumSpec) -> np.ndarray:
+def decision_steps(n: int, spec: DrimSpec) -> np.ndarray:
     """Steps at which the slow level replans and a full target chunk exists.
 
     Stride is ``exec_horizon``: that is the rate the slow level actually replans
@@ -344,7 +344,7 @@ def decision_steps(n: int, spec: IrumSpec) -> np.ndarray:
     return np.arange(0, last + 1, spec.exec_horizon, dtype=np.int64)
 
 
-def build_chunks(eps: IrumEpisodes, spec: IrumSpec, indices: Sequence[int]
+def build_chunks(eps: DrimEpisodes, spec: DrimSpec, indices: Sequence[int]
                  ) -> Dict[str, np.ndarray]:
     """Flatten the named episodes into one array per field.
 
@@ -401,7 +401,7 @@ def build_chunks(eps: IrumEpisodes, spec: IrumSpec, indices: Sequence[int]
             for k, v in out.items() if v}
 
 
-def short_episodes(eps: "IrumEpisodes", spec: IrumSpec) -> List[int]:
+def short_episodes(eps: "DrimEpisodes", spec: DrimSpec) -> List[int]:
     """Episodes too short to yield a single chunk.
 
     A recording aborted after a couple of steps contributes nothing but still
@@ -413,7 +413,7 @@ def short_episodes(eps: "IrumEpisodes", spec: IrumSpec) -> List[int]:
             if len(decision_steps(n, spec)) == 0]
 
 
-def action_residual_demand(chunks: Dict[str, np.ndarray], spec: IrumSpec
+def action_residual_demand(chunks: Dict[str, np.ndarray], spec: DrimSpec
                           ) -> Dict[str, Any]:
     """How much per-step correction a chunk-level plan cannot express.
 
@@ -496,9 +496,9 @@ def load_split(zarr_path: str, cameras: Sequence[str] = (), n_arms: int = 2,
                spec_kw: Optional[Dict[str, Any]] = None, warn_scale: bool = True,
                image_size: Optional[Tuple[int, int]] = None, **kw
                ) -> Tuple[Dict[str, np.ndarray], Dict[str, np.ndarray],
-                          ChunkNormaliser, "IrumEpisodes", IrumSpec]:
+                          ChunkNormaliser, "DrimEpisodes", DrimSpec]:
     """Resolve the dataset, derive the spec from it, and cut it into chunks."""
-    eps = IrumEpisodes(zarr_path, cameras=cameras, n_arms=n_arms, layout=layout,
+    eps = DrimEpisodes(zarr_path, cameras=cameras, n_arms=n_arms, layout=layout,
                        require=require, image_size=image_size, **kw)
     spec_kw = dict(spec_kw or {})
     native = eps.native_image_size()

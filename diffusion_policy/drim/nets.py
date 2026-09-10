@@ -1,4 +1,4 @@
-"""The IRUM networks, ported from dap with every dimension made an argument.
+"""The DRIM networks, ported from dap with every dimension made an argument.
 
 Sources, all under ``~/dap``:
 
@@ -63,7 +63,7 @@ def _cat(*parts: Optional[torch.Tensor]) -> torch.Tensor:
 class FlowChunkPolicy(nn.Module):
     """Rectified-flow action-chunk policy over a stack of slow frames.
 
-    Ordinary and well understood on purpose: the question IRUM asks is whether a
+    Ordinary and well understood on purpose: the question DRIM asks is whether a
     plug-in adapter improves a *frozen competent* nominal policy, so the nominal
     policy is a standard chunk policy and nothing more.
 

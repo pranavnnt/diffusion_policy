@@ -1,4 +1,4 @@
-# IRUM in the dressing stack
+# DRIM in the dressing stack
 
 A port of the `IMG_B0` / `IMG_B1` / `IMG_D2` chain from `~/dap`
 (`empriselab/reactive-policy`) into this repository, so it can be trained on
@@ -25,7 +25,7 @@ v(x, t, ctx, m) = v_base(x, t, ctx) + gate * (dv(x,t,ctx,m) − dv(x,t,ctx,0))
 
 At `m = 0` the bracket is identically zero *for any parameter values*, so `D2`
 with a null message **is** `B1`, bit for bit — not merely at initialisation.
-`tests/test_irum.py` checks this after perturbing the message path, which is the
+`tests/test_drim.py` checks this after perturbing the message path, which is the
 only version of the check that means anything.
 
 ## Running it
@@ -35,13 +35,13 @@ conda activate maniskill3          # this machine has no `robodiff` env
 cd ~/diffusion_policy
 
 # plumbing check: every stage, tiny budgets, output under data/outputs/
-python -m diffusion_policy.irum.train --data <path> --quick
+python -m diffusion_policy.drim.train --data <path> --quick
 
 # a real run
-python -m diffusion_policy.irum.train --data <path> --fast-frac 0.15 \
+python -m diffusion_policy.drim.train --data <path> --fast-frac 0.15 \
   --out data/outputs/irum_v1
 
-pytest tests/test_irum.py          # 36 invariants, no data or GPU needed
+pytest tests/test_drim.py          # 36 invariants, no data or GPU needed
 ```
 
 ### Where the output goes
@@ -88,17 +88,17 @@ The other flags worth knowing:
 | `--no-keep-grid` | off | drop the epoch grid from the checkpoint to save disk |
 | `--epochs-{dyn,b0,b1,d2}` | 100/60/40/40 | fixed in advance, never tuned on the result |
 
-`pytest tests/test_irum.py` runs the invariants — 42 of them, no data or GPU
+`pytest tests/test_drim.py` runs the invariants — 42 of them, no data or GPU
 needed.
 
 ## What changed in the port, and why
 
 dap's benchmarks are two frozen tasks with their dimensions as module constants.
-Everything that was a constant there is a field of `IrumSpec` here.
+Everything that was a constant there is a field of `DrimSpec` here.
 
 | dap | here | why |
 |---|---|---|
-| `OBS_DIM = 59`, `ACT_DIM = 7`, `WRENCH_DIM = 6` | `IrumSpec` fields | the rig publishes a 28-dim state and a 12-dim action |
+| `OBS_DIM = 59`, `ACT_DIM = 7`, `WRENCH_DIM = 6` | `DrimSpec` fields | the rig publishes a 28-dim state and a 12-dim action |
 | wrench always present | `wrench_dim` may be **0** | the real rig has no force channel at all (see below) |
 | fixed 128-step episodes cut into 16 fixed chunks | sliding decision step, stride `exec_horizon` | demonstrations are whatever length the operator recorded |
 | fixed 32-step **event** window anchored to a scripted event | **rolling** causal window, `msg_valid` where it fits | a teleop episode has no such anchor, and 32 > the whole episode |
@@ -241,7 +241,7 @@ represent cloth dragging on the forearm, and 7 joint torques can.
 **A missing field is excluded from the state vector, never zero-filled.** A
 constant channel trains without complaint, costs nothing visible, and removes
 the signal a stage depends on. So the widths always equal what was actually
-measured, `IrumSpec` records which fields it was built from, and
+measured, `DrimSpec` records which fields it was built from, and
 `assert_schema` refuses a checkpoint whose channels are not the ones its weights
 saw — width equality is not enough, since dropping `gripper_pos`+`gripper_vel`
 keeps every tensor shape valid while shifting every channel after them.
@@ -285,7 +285,7 @@ manoeuvre.
 ## What the dynamics models
 
 The delta dynamics predicts **proprioception and the contact channels**, not
-proprioception alone (`IrumSpec.dyn_fields`). Splitting `prop` from `wrench` is
+proprioception alone (`DrimSpec.dyn_fields`). Splitting `prop` from `wrench` is
 right for the policy's inputs — the corrector needs a per-step contact reading of
 its own — but wrong for the dynamics: cap's model predicts the wrench along with
 everything else, and a surprise computed over a state that excludes force cannot
@@ -309,7 +309,7 @@ into. The loader warns when the jitter exceeds 3×.
 
 Conditioning does not repair everything. `pred_horizon` and `message_window` are
 counted in steps, so they mean different durations at different points in an
-episode, and IRUM's slow/fast separation — a slow level replanning every
+episode, and DRIM's slow/fast separation — a slow level replanning every
 `exec_horizon` steps, a fast level correcting every step — is not separated in
 time at this rate. That is a data-collection property, not something the model
 can fix.
