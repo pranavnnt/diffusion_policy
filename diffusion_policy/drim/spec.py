@@ -63,6 +63,27 @@ class DrimSpec:
     #: cannot be predicted from anything visible, so it becomes noise the flow
     #: field spends capacity fitting.
     act_channels: Tuple[int, ...] = ()
+    #: How the action is parameterised.
+    #:
+    #: ``"absolute"``      predict the command as recorded.
+    #: ``"delta_ee_pos"``  predict it **relative to the end-effector pose at the
+    #:                     step it executes on**.  For this rig the recorded
+    #:                     ``action`` is an absolute pose target that the
+    #:                     controller already tracks to within 8 mm, so its
+    #:                     absolute value is nearly the observed pose and
+    #:                     predicting it is close to copying an input: holding
+    #:                     the previous action scores 0.0002 against a
+    #:                     predict-zero of 0.184.  The operator's actual
+    #:                     contribution is the *nudge* away from where the arm
+    #:                     is, and on that the copycat only reaches 0.117
+    #:                     against 0.243.  Same command either way -- the pose
+    #:                     is added back at execution, where it is observed.
+    action_mode: str = "absolute"
+    #: Width of a known exogenous command that is injected at both teleop and
+    #: inference and is *not* predicted (this rig's zigzag primitive).  It
+    #: conditions the dynamics, because a model that cannot see a driving input
+    #: it could have seen puts that input's effect into the surprise channel.
+    exo_dim: int = 0
     #: Command scale per action channel in physical units (m/s, rad/s), used to
     #: normalise actions to [-1, 1] and to express the fast level's authority as
     #: a fraction of full command.  ``None`` falls back to the observed range,
@@ -109,6 +130,7 @@ class DrimSpec:
             assert len(self.fast_limits) == self.act_dim, (
                 f"{len(self.fast_limits)} ceilings for {self.act_dim} channels")
             assert all(v >= 0 for v in self.fast_limits)
+        assert self.action_mode in ("absolute", "delta_ee_pos"), self.action_mode
         if self.act_scale is not None:
             assert len(self.act_scale) == self.act_dim, (
                 f"{len(self.act_scale)} scales for {self.act_dim} channels")
@@ -182,21 +204,6 @@ class DrimSpec:
         return cls(**d)
 
 
-#: The teleop's full-deflection command, per arm: 3 linear m/s then 3 angular
-#: rad/s.  From ``dressing_policies/data_collection/single_joystick_teleop.py``
-#: (``LIN_SCALE``, ``ANG_SCALE``) — the rig's own declaration of what one unit of
-#: action means, which is what makes a ceiling expressed as a fraction of it
-#: mean something.
-ARM_ACT_SCALE: Tuple[float, ...] = (0.02, 0.02, 0.02, 0.05, 0.05, 0.05)
-ACT_PER_ARM: int = len(ARM_ACT_SCALE)
-
-
-def arm_act_channels(arm_ids: Sequence[int], per_arm: int = ACT_PER_ARM
-                     ) -> Tuple[int, ...]:
-    """The recorded action channels belonging to the given arms."""
-    return tuple(a * per_arm + c for a in arm_ids for c in range(per_arm))
-
-
 def fast_limits_from_fraction(frac: float, act_scale: Sequence[float],
                               active: Sequence[int] = ()) -> Tuple[float, ...]:
     """Ceilings as a fraction of full command authority.
@@ -245,6 +252,8 @@ def from_resolution(res, cameras: Sequence[str] = (),
                     act_width: Optional[int] = None,
                     n_declared: Optional[int] = None,
                     act_range: Optional[Sequence[float]] = None,
+                    act_scale_per_arm: Optional[Sequence[float]] = None,
+                    act_per_arm: Optional[int] = None,
                     **kw) -> DrimSpec:
     """Build a spec from what a dataset actually measured.
 
@@ -263,34 +272,26 @@ def from_resolution(res, cameras: Sequence[str] = (),
     #: single-arm zigzag script writes 3 in total.  Deriving it from the
     #: recorded width is what lets one spec serve both; assuming 6 indexes past
     #: the end of a 3-wide action.
-    per_arm = ACT_PER_ARM
-    if act_width is not None and n_declared:
+    per_arm = int(act_per_arm or 0)
+    if act_width is not None and n_declared and per_arm:
         if act_width % n_declared == 0:
             per_arm = act_width // n_declared
         else:
             per_arm = act_width          # not divisible: treat as one block
     if chans is None:
-        chans = arm_act_channels(res.arms, per_arm)
+        chans = (tuple(a * per_arm + c for a in res.arms for c in range(per_arm))
+                 if per_arm else tuple(range(act_width or 0)))
         if act_width is not None:
             chans = tuple(c for c in chans if c < act_width)
     scale = kw.pop("act_scale", None)
-    if scale is None and per_arm == ACT_PER_ARM and act_range is not None:
-        #: The declared scale describes what the *joystick* can command. A
-        #: scripted controller is under no obligation to stay inside it — the
-        #: 0909 zigzag runs to 0.08 m/s against a declared 0.02 — and a target
-        #: beyond the scale is unreachable once the sampler clamps. So the
-        #: declaration is used only when the recording actually fits inside it.
-        if any(r > s_ for r, s_ in zip(act_range, [ARM_ACT_SCALE[c % ACT_PER_ARM]
-                                                   for c in chans])):
-            scale = None
-            per_arm = -1                 # skip the branch below
-    if scale is None and per_arm == ACT_PER_ARM:
-        #: ``ARM_ACT_SCALE`` describes one specific action layout — 3 linear
-        #: m/s then 3 angular rad/s. Applying it to an action of a different
-        #: width, or to a position target rather than a velocity command, would
-        #: put a wrong constant where a measured one belongs, so anything else
-        #: falls back to the observed range and says so.
-        scale = tuple(ARM_ACT_SCALE[c % ACT_PER_ARM] for c in chans)
+    if scale is None and act_scale_per_arm and per_arm == len(act_scale_per_arm):
+        cand = tuple(act_scale_per_arm[c % per_arm] for c in chans)
+        #: A declared command scale is usable only if the recording fits inside
+        #: it: the sampler clamps to [-1, 1], so a target beyond the scale is
+        #: unreachable for any parameter values, and a scripted controller is
+        #: under no obligation to stay within what a joystick can command.
+        if act_range is None or not any(r > c for r, c in zip(act_range, cand)):
+            scale = cand
     kw.pop("act_dim", None)          # a consequence of the channels, not an input
     return DrimSpec(
         prop_dim=res.width(prop), wrench_dim=res.width(wrench),
@@ -304,21 +305,6 @@ def from_resolution(res, cameras: Sequence[str] = (),
 #: Defaults for the dressing rig, independent of which fields a given recording
 #: happens to carry.
 #:
-#: Sized for the rig's measured 14.3 Hz (the 0909 recordings hold that to within
-#: 0.079 s, so a step is a fixed duration rather than a hope).
-#:
-#: ``pred16/exec8`` is cap's, and at this rate it means predicting 1.1 s and
-#: executing 0.56 s.  The earlier ``pred8/exec4`` was chosen when the recordings
-#: ran at a jittery ~6 Hz, where 16 steps would have spanned most of a manoeuvre.
-#:
-#: ``message_window=32`` is 2.24 s, chosen to cover **one full zigzag cycle**:
-#: the commanded velocity flips sign every 14 steps in these recordings, so a
-#: 28-step cycle plus margin is the shortest window in which the message can see
-#: a whole period of the motion rather than half of one.  A half-cycle window
-#: would make the message's content depend on which half it landed in.
-DRESSING_HORIZONS: Dict[str, Any] = dict(
-    pred_horizon=16, exec_horizon=8, message_window=32,
-    image_shape=(3, 240, 320), crop_shape=(216, 288),
-)
-
-DRESSING_CAMERAS: Tuple[str, ...] = ("image_arm1", "image_bed_front")
+#: Task-specific defaults — horizons, cameras, command scales, packed-state
+#: layouts — live in :mod:`diffusion_policy.drim.dressing`. Nothing in this
+#: module knows about a particular robot.

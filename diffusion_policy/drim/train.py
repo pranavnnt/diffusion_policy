@@ -36,9 +36,8 @@ from diffusion_policy.drim import fields as F
 from diffusion_policy.drim.dataset import (ChunkNormaliser, load_split,
                                            action_residual_demand,
                                            trivial_action_baselines)
-from diffusion_policy.drim.spec import (DrimSpec, DRESSING_HORIZONS,
-                                        DRESSING_CAMERAS,
-                                        fast_limits_from_fraction,
+from diffusion_policy.drim import dressing as DRESS
+from diffusion_policy.drim.spec import (DrimSpec, fast_limits_from_fraction,
                                         fast_frac_from_demand)
 
 BATCH = 64
@@ -137,6 +136,11 @@ def train_dynamics(spec: DrimSpec, tr, va, seed: int, epochs: int, device: str,
 
     def flat(d, key):
         a = d[key]
+        #: A zero-width stream (no exogenous command declared) cannot go
+        #: through ``reshape(-1, 0)`` — numpy cannot infer a free dimension
+        #: against a zero one — so build it explicitly.
+        if a.shape[-1] == 0:
+            return np.zeros((int(np.prod(a.shape[:-1])), 0), a.dtype)
         return a.reshape(-1, a.shape[-1])
 
     def prep(d):
@@ -144,11 +148,12 @@ def train_dynamics(spec: DrimSpec, tr, va, seed: int, epochs: int, device: str,
         yn = flat(d, "hist_y_next")
         a = flat(d, "hist_a")
         dt = flat(d, "hist_dt")
+        xo = flat(d, "hist_exo")
         keep = np.repeat(d["msg_valid"] > 0, d["hist_y"].shape[1])
-        return y[keep], yn[keep], a[keep], dt[keep]
+        return y[keep], yn[keep], a[keep], dt[keep], xo[keep]
 
-    ytr, yntr, atr, dttr = prep(tr)
-    yva, ynva, ava, dtva = prep(va)
+    ytr, yntr, atr, dttr, xotr = prep(tr)
+    yva, ynva, ava, dtva, xova = prep(va)
     assert len(ytr), (
         "no decision step has a full message window behind it; lower "
         "spec.message_window or record longer episodes")
@@ -156,12 +161,14 @@ def train_dynamics(spec: DrimSpec, tr, va, seed: int, epochs: int, device: str,
     norm = DY.Normaliser(y=ytr, d=dtr)
     baseline = DY.no_change_baseline(norm.d(dtr))
 
-    model = DY.DeltaDynamics(mods, spec.act_dim).to(device)
+    model = DY.DeltaDynamics(mods, spec.act_dim,
+                             exo_dim=spec.exo_dim).to(device)
     opt = torch.optim.AdamW(model.parameters(), lr=LR_DYN,
                             weight_decay=WEIGHT_DECAY)
     ty = torch.as_tensor(norm.y(ytr), device=device)
     ta = torch.as_tensor(atr, dtype=torch.float32, device=device)
     tdt = torch.as_tensor(dttr, dtype=torch.float32, device=device)
+    txo = torch.as_tensor(xotr, dtype=torch.float32, device=device)
     td = torch.as_tensor(norm.d(dtr), device=device)
     rng = np.random.default_rng(seed + 3000)
     t0 = time.time()
@@ -169,7 +176,8 @@ def train_dynamics(spec: DrimSpec, tr, va, seed: int, epochs: int, device: str,
         tot = 0.0
         for sel in _batches(len(ty), BATCH, rng):
             i = torch.as_tensor(sel, device=device)
-            mu, ls = model(ty[i], ta[i], tdt[i])
+            mu, ls = model(ty[i], ta[i], tdt[i],
+                           txo[i] if spec.exo_dim else None)
             loss = DY.gaussian_nll(mu, ls, td[i])
             opt.zero_grad()
             loss.backward()
@@ -185,11 +193,14 @@ def train_dynamics(spec: DrimSpec, tr, va, seed: int, epochs: int, device: str,
     with torch.no_grad():
         t_ava = torch.as_tensor(ava, dtype=torch.float32, device=device)
         t_dtva = torch.as_tensor(dtva, dtype=torch.float32, device=device)
-        mu, _ = frozen(torch.as_tensor(yva, device=device), t_ava, t_dtva)
+        t_xova = (torch.as_tensor(xova, dtype=torch.float32, device=device)
+                  if spec.exo_dim else None)
+        mu, _ = frozen(torch.as_tensor(yva, device=device), t_ava, t_dtva, t_xova)
         mse = float(((torch.as_tensor(norm.d(dva), device=device) - mu) ** 2)
                     .mean().item())
         ch = DY.surprise(frozen, torch.as_tensor(yva, device=device),
-                         torch.as_tensor(ynva, device=device), t_ava, t_dtva)
+                         torch.as_tensor(ynva, device=device), t_ava, t_dtva,
+                         t_xova)
     base_va = DY.no_change_baseline(norm.d(dva))
     skill = (base_va - mse) / max(base_va, 1e-12)
     log(f"      dyn  mse={mse:.6f}  no-change baseline={base_va:.6f}  "
@@ -213,8 +224,10 @@ def attach_su(d: Dict[str, np.ndarray], frozen: DY.FrozenDynamics,
     yn = torch.as_tensor(d["hist_y_next"], dtype=torch.float32, device=device)
     a = torch.as_tensor(d["hist_a"], dtype=torch.float32, device=device)
     dt = torch.as_tensor(d["hist_dt"], dtype=torch.float32, device=device)
+    xo = (torch.as_tensor(d["hist_exo"], dtype=torch.float32, device=device)
+          if d["hist_exo"].shape[-1] else None)
     with torch.no_grad():
-        ch = DY.surprise(frozen, y, yn, a, dt)
+        ch = DY.surprise(frozen, y, yn, a, dt, xo)
     mv = d["msg_valid"][:, None, None]
     out["hist_S"] = ch["S"].cpu().numpy().astype(np.float32) * mv
     out["hist_U"] = ch["U"].cpu().numpy().astype(np.float32) * mv
@@ -586,11 +599,15 @@ def check_exact_null(d2: PL.DrimPolicy, b: Dict[str, torch.Tensor],
 def run(zarr_path: Any, out_dir: str, seed: int = 0,
         epochs: Optional[Dict[str, int]] = None, device: str = "cpu",
         stages: Sequence[str] = STAGES, val_ratio: float = 0.2,
-        cameras: Sequence[str] = DRESSING_CAMERAS, n_arms: int = 2,
+        cameras: Sequence[str] = (), n_arms: int = 2,
         layout: Optional[F.PackedLayout] = None,
         fast_frac: Any = "auto",
         require: Sequence[str] = (), action_key: str = "action",
-        image_size: Optional[Tuple[int, int]] = (240, 320),
+        action_mode: str = "absolute", exo_key: Optional[str] = None,
+        act_scale_per_arm: Optional[Sequence[float]] = None,
+        act_per_arm: Optional[int] = None,
+        image_size: Optional[Tuple[int, int]] = None,
+        horizons: Optional[Dict[str, Any]] = None,
         estimator: str = SEL.DEFAULT_ESTIMATOR, keep_grid: bool = True,
         diagnose: bool = True, diag_steps: int = 32, diag_starts: int = 48,
         log: Callable[[str], None] = print) -> Dict[str, Any]:
@@ -619,8 +636,9 @@ def run(zarr_path: Any, out_dir: str, seed: int = 0,
     tr, va, norm, eps, spec = load_split(
         zarr_path, cameras=cameras, n_arms=n_arms, layout=layout,
         val_ratio=val_ratio, seed=seed, require=require,
-        action_key=action_key, image_size=image_size,
-        spec_kw=dict(**DRESSING_HORIZONS))
+        action_key=action_key, image_size=image_size, exo_key=exo_key,
+        act_scale_per_arm=act_scale_per_arm, act_per_arm=act_per_arm,
+        spec_kw=dict(action_mode=action_mode, **(horizons or {})))
 
     res = eps.resolution
     log(f"[fields] usable: {', '.join(res.usable) or '(none)'}")
@@ -843,7 +861,7 @@ def run(zarr_path: Any, out_dir: str, seed: int = 0,
 
 
 #: Packed-state layouts for datasets that do not write one array per field.
-LAYOUTS = {"smoke": F.SMOKE_LAYOUT, "none": None}
+LAYOUTS = {"packed": DRESS.PACKED_STATE, "none": None}
 
 
 def main(argv=None) -> int:
@@ -861,19 +879,38 @@ def main(argv=None) -> int:
     ap.add_argument("--stages", default=",".join(STAGES))
     ap.add_argument("--val-ratio", type=float, default=0.2)
     ap.add_argument("--n-arms", type=int, default=2)
-    ap.add_argument("--cameras", default=",".join(DRESSING_CAMERAS),
-                    help="comma-separated zarr keys; empty for a state-only run")
-    ap.add_argument("--image-size", default="240x320",
+    ap.add_argument("--profile", default="dressing", choices=("dressing", "none"),
+                    help="task defaults. 'dressing' applies everything in "
+                         "drim/dressing.py -- the packed-state layout, the "
+                         "14.3 Hz horizons, the joystick command scale, the "
+                         "delta-pose action and the zigzag primitive as a "
+                         "dynamics input. 'none' leaves the core defaults, "
+                         "which know about no particular robot.")
+    ap.add_argument("--cameras", default=None,
+                    help="comma-separated zarr keys; empty for a state-only "
+                         "run. Defaults to the profile's cameras.")
+    ap.add_argument("--image-size", default=None,
                     help="resize camera frames on load, e.g. 240x320, or "
                          "'native' to keep the recorded resolution. The encoder "
                          "crops ~90%% of whatever it is given, so a frame much "
                          "larger than this is mostly discarded, not used.")
-    ap.add_argument("--layout", default="smoke", choices=sorted(LAYOUTS),
+    ap.add_argument("--layout", default="profile",
+                    choices=sorted(LAYOUTS) + ["profile"],
                     help="packed-state layout; 'none' expects one array per field")
     ap.add_argument("--action-key", default="action",
                     help="which recorded array is the action the policy "
                          "predicts (e.g. zigzag_action for the scripted "
                          "commanded velocity)")
+    ap.add_argument("--action-mode", default=None,
+                    choices=("delta_ee_pos", "absolute"),
+                    help="predict the pose command relative to the observed "
+                         "end-effector pose (default) or as recorded. The "
+                         "absolute target is nearly the observed pose on this "
+                         "rig, so predicting it is close to copying an input.")
+    ap.add_argument("--exo-key", default=None,
+                    help="a command injected at both teleop and inference that "
+                         "the policy does not predict; it conditions the "
+                         "dynamics. Empty to disable.")
     ap.add_argument("--require", default="",
                     help="comma-separated fields that must resolve, e.g. "
                          "'wrench' to refuse a dataset without a contact signal")
@@ -908,6 +945,19 @@ def main(argv=None) -> int:
                          "Channels the data never moves get 0. dap's own arms "
                          "sit at 0.016 (cap) and 0.16 (drawer).")
     a = ap.parse_args(argv)
+    prof = DRESS.profile() if a.profile == "dressing" else {}
+    if a.cameras is not None:
+        prof["cameras"] = tuple(c for c in a.cameras.split(",") if c)
+    if a.action_mode is not None:
+        prof["action_mode"] = a.action_mode
+    if a.exo_key is not None:
+        prof["exo_key"] = (a.exo_key or None)
+    if a.image_size is not None:
+        prof["image_size"] = (None if a.image_size == "native"
+                              else tuple(int(v) for v in
+                                         a.image_size.lower().split("x")))
+    if a.layout != "profile":
+        prof["layout"] = LAYOUTS[a.layout]
     out = a.out or os.path.join(
         "data", "outputs", "drim_" + time.strftime("%Y%m%d_%H%M%S"))
     ep = {"dyn": a.epochs_dyn, "B0": a.epochs_b0,
@@ -920,14 +970,18 @@ def main(argv=None) -> int:
     run([p for p in a.data.split(",") if p], out, seed=a.seed,
         device=a.device,
         stages=tuple(a.stages.split(",")), val_ratio=a.val_ratio,
-        cameras=tuple(c for c in a.cameras.split(",") if c),
-        n_arms=a.n_arms, layout=LAYOUTS[a.layout],
+        cameras=prof.pop("cameras", ()),
+        n_arms=a.n_arms, layout=prof.pop("layout", None),
         fast_frac=(a.fast_frac if a.fast_frac == "auto"
                    else float(a.fast_frac)),
         require=tuple(r for r in a.require.split(",") if r),
         action_key=a.action_key,
-        image_size=(None if a.image_size == "native"
-                    else tuple(int(v) for v in a.image_size.lower().split("x"))),
+        action_mode=prof.pop("action_mode", "absolute"),
+        exo_key=prof.pop("exo_key", None),
+        image_size=prof.pop("image_size", None),
+        act_scale_per_arm=prof.pop("act_scale_per_arm", None),
+        act_per_arm=prof.pop("act_per_arm", None),
+        horizons=prof,
         estimator=a.estimator, keep_grid=not a.no_keep_grid, epochs=ep,
         diagnose=not a.no_diagnose, diag_steps=a.diag_steps,
         diag_starts=a.diag_starts)

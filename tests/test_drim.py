@@ -371,9 +371,11 @@ def test_no_change_baseline_is_reported_in_delta_units():
 def test_action_is_trimmed_to_the_arms_the_state_covers():
     """Commanding an arm the observation cannot see is noise the flow field fits."""
     from diffusion_policy.drim.spec import from_resolution
+    from diffusion_policy.drim.dressing import ACT_PER_ARM
     res = FL.resolve(_packed_source(arm2_live=False), n_arms=2,
                      layout=FL.SMOKE_LAYOUT, warn=False)
-    spec = from_resolution(res)
+    spec = from_resolution(res, act_width=12, n_declared=2,
+                           act_per_arm=ACT_PER_ARM)
     assert res.arms == (0,)
     assert spec.act_channels == (0, 1, 2, 3, 4, 5)
     assert spec.act_dim == 6
@@ -381,13 +383,14 @@ def test_action_is_trimmed_to_the_arms_the_state_covers():
 
 def test_action_channels_follow_the_live_arm_not_its_position():
     """With arm1 dropped, arm2's channels are 6..11 — not 0..5."""
-    from diffusion_policy.drim.spec import arm_act_channels
+    from diffusion_policy.drim.dressing import arm_act_channels
     assert arm_act_channels((1,)) == (6, 7, 8, 9, 10, 11)
     assert arm_act_channels((0, 1))[-1] == 11
 
 
 def test_dead_channels_get_zero_authority():
-    from diffusion_policy.drim.spec import fast_limits_from_fraction, ARM_ACT_SCALE
+    from diffusion_policy.drim.spec import fast_limits_from_fraction
+    from diffusion_policy.drim.dressing import ARM_ACT_SCALE
     lim = fast_limits_from_fraction(0.05, ARM_ACT_SCALE, active=[1])
     assert lim == (0.0, 0.05, 0.0, 0.0, 0.0, 0.0)
     #: and a zero ceiling is structurally silent, not merely small
@@ -402,7 +405,8 @@ def test_dead_channels_get_zero_authority():
 
 
 def test_fraction_must_be_a_fraction():
-    from diffusion_policy.drim.spec import fast_limits_from_fraction, ARM_ACT_SCALE
+    from diffusion_policy.drim.spec import fast_limits_from_fraction
+    from diffusion_policy.drim.dressing import ARM_ACT_SCALE
     with pytest.raises(AssertionError, match="fraction of full command"):
         fast_limits_from_fraction(1.5, ARM_ACT_SCALE)
 
@@ -410,7 +414,7 @@ def test_fraction_must_be_a_fraction():
 def test_actions_normalise_by_the_declared_command_scale():
     """Full deflection maps to +/-1 regardless of what this dataset happened to use."""
     from diffusion_policy.drim.dataset import ChunkNormaliser
-    from diffusion_policy.drim.spec import ARM_ACT_SCALE
+    from diffusion_policy.drim.dressing import ARM_ACT_SCALE
     data = {"target": np.full((4, 8, 6), 0.001, np.float32)}   # a timid dataset
     n = ChunkNormaliser(data, act_scale=ARM_ACT_SCALE)
     full = np.array([[[0.02, 0.02, 0.02, 0.05, 0.05, 0.05]]], np.float32)
@@ -655,7 +659,9 @@ def test_action_width_comes_from_the_recording_not_a_constant():
     from diffusion_policy.drim.spec import from_resolution
     res = FL.resolve(_packed_source(arm2_live=False), n_arms=2,
                      layout=FL.SMOKE_LAYOUT, warn=False)
-    spec = from_resolution(res, act_width=3, n_declared=1)
+    from diffusion_policy.drim.dressing import ACT_PER_ARM
+    spec = from_resolution(res, act_width=3, n_declared=1,
+                           act_per_arm=ACT_PER_ARM)
     assert spec.act_channels == (0, 1, 2) and spec.act_dim == 3
     #: and an action that is not the 3-linear/3-angular layout gets no declared
     #: scale, so it falls back to the observed range rather than a wrong constant
@@ -750,14 +756,16 @@ def test_verdict_fails_when_the_copycat_wins():
 
 def test_unreachable_targets_are_flagged():
     """sample_chunk clamps to [-1,1]; a target beyond it cannot be produced."""
-    from diffusion_policy.drim.spec import from_resolution, ARM_ACT_SCALE
+    from diffusion_policy.drim.spec import from_resolution
+    from diffusion_policy.drim.dressing import ARM_ACT_SCALE, ACT_PER_ARM
     res = FL.resolve(_packed_source(arm2_live=False), n_arms=2,
                      layout=FL.SMOKE_LAYOUT, warn=False)
     #: within the declared command scale -> the declaration is used
+    kw = dict(act_scale_per_arm=ARM_ACT_SCALE, act_per_arm=ACT_PER_ARM)
     ok = from_resolution(res, act_width=6, n_declared=1,
-                         act_range=[0.01, 0.01, 0.01, 0.02, 0.02, 0.02])
+                         act_range=[0.01, 0.01, 0.01, 0.02, 0.02, 0.02], **kw)
     assert ok.act_scale == ARM_ACT_SCALE
     #: beyond it -> fall back to the observed range rather than clamp the target
     over = from_resolution(res, act_width=6, n_declared=1,
-                           act_range=[0.08, 0.01, 0.01, 0.02, 0.02, 0.02])
+                           act_range=[0.08, 0.01, 0.01, 0.02, 0.02, 0.02], **kw)
     assert over.act_scale is None

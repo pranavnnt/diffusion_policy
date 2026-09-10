@@ -28,6 +28,47 @@ with a null message **is** `B1`, bit for bit — not merely at initialisation.
 `tests/test_drim.py` checks this after perturbing the message path, which is the
 only version of the check that means anything.
 
+## What is DRIM, and what is this rig
+
+`dressing.py` holds every choice that is true of the real dressing setup and
+not of the method. If a constant or a reparameterisation elsewhere looks
+arbitrary, it should be in there; if it is in there, it is a property of a
+bimanual Franka running a scripted zigzag under joystick supervision.
+
+| | |
+|---|---|
+| **DRIM** (`policy.py`, `nets.py`, `selection.py`, `diagnose.py`, `dynamics.py`) | the staged B0/B1/D2 chain, the exact-null identity, the bounded corrector, the S/U message, offline selection, the pre-deployment checks. Knows about no robot. |
+| **this rig** (`dressing.py`, and `ARM_FIELDS` in `fields.py`) | the packed-state layout, the 14.3 Hz horizons, the joystick command scale, the per-arm field schema, and the two adaptations below. |
+
+`--profile dressing` (default) applies them; `--profile none` leaves the core
+defaults.
+
+### The two that change what is learned
+
+**`action_mode = "delta_ee_pos"`.** The recorded `action` is an absolute
+end-effector pose target that the controller tracks to within 8 mm, so its
+absolute value is nearly the observed pose and predicting it is close to copying
+an input: holding the previous action scores 0.00024 against a predict-zero of
+0.184, beating a trained `B0` (~0.017) by ~90x. Predicting the delta puts the
+copycat at 0.117 against 0.243. The command sent to the robot is unchanged — the
+observed pose is added back at execution.
+
+It is also what makes trajectory divergence measurable. With an absolute target
+the commanded pose does not depend on where the arm is, so drift self-corrects
+and compounding never shows; with a delta it accumulates. On a task that is easy
+step-to-step and hard over a trajectory, that is the difference between
+measuring something and measuring nothing.
+
+**`exo_key = "zigzag_action"`.** A scripted zigzag velocity is injected during
+teleop *and* inference and is never predicted. The arm's measured motion is
+almost entirely that primitive — `corr(ee_twist, zigzag_action)` is
+0.78 / 0.996 / 0.988 per axis against 0.006 / -0.038 / 0.026 for the operator's
+delta — so a dynamics model not given it must infer its phase from state, and
+whatever it cannot infer lands in the surprise channel that is the entire
+content of D2's message. It is known at training and inference alike, so
+conditioning on it is not privileged information. Held-out dynamics skill went
++68.5 % to +71.0 %.
+
 ## Running it
 
 ```bash

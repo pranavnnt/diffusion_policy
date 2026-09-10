@@ -181,7 +181,7 @@ class DeltaDynamics(nn.Module):
     """
 
     def __init__(self, mods: Sequence[Modality], act_dim: int,
-                 hidden: int = 256, use_dt: bool = True):
+                 hidden: int = 256, use_dt: bool = True, exo_dim: int = 0):
         super().__init__()
         self.mods = list(mods)
         self.state_dim = state_dim(self.mods)
@@ -194,8 +194,17 @@ class DeltaDynamics(nn.Module):
         #: dominated by how long the step happened to take rather than by what
         #: the arm ran into.
         self.use_dt = bool(use_dt)
+        #: A command that is injected at both teleop and inference and is not
+        #: predicted -- this rig's zigzag primitive.  Withholding it does not
+        #: make the model more honest, it makes it worse: the arm's measured
+        #: velocity correlates 0.78-0.996 with the zigzag and ~0.0 with the
+        #: operator's nudge, so a model that cannot see it must infer the phase
+        #: from state, and whatever it cannot infer lands in the surprise
+        #: channel that is the whole content of D2's message.
+        self.exo_dim = int(exo_dim)
         self.trunk = nn.Sequential(
-            nn.Linear(self.state_dim + self.act_dim + int(self.use_dt), hidden),
+            nn.Linear(self.state_dim + self.act_dim + self.exo_dim
+                      + int(self.use_dt), hidden),
             nn.SiLU(),
             nn.Linear(hidden, hidden), nn.SiLU(),
             nn.Linear(hidden, hidden), nn.SiLU())
@@ -208,9 +217,13 @@ class DeltaDynamics(nn.Module):
             nn.init.zeros_(head.bias)
 
     def forward(self, y: torch.Tensor, a: torch.Tensor,
-                dt: Optional[torch.Tensor] = None
+                dt: Optional[torch.Tensor] = None,
+                exo: Optional[torch.Tensor] = None
                 ) -> Tuple[torch.Tensor, torch.Tensor]:
         parts = [y, a]
+        if self.exo_dim:
+            assert exo is not None, "this dynamics was built with exo_dim > 0"
+            parts.append(exo)
         if self.use_dt:
             assert dt is not None, "this dynamics was built with use_dt=True"
             parts.append(dt)
@@ -286,8 +299,9 @@ class FrozenDynamics(nn.Module):
 
     @torch.no_grad()
     def forward(self, y_raw: torch.Tensor, a: torch.Tensor,
-                dt: Optional[torch.Tensor] = None):
-        return self.model(self.norm.torch_y(y_raw), a, dt)
+                dt: Optional[torch.Tensor] = None,
+                exo: Optional[torch.Tensor] = None):
+        return self.model(self.norm.torch_y(y_raw), a, dt, exo)
 
     @torch.no_grad()
     def normalise_delta(self, d_raw: torch.Tensor) -> torch.Tensor:
@@ -296,8 +310,8 @@ class FrozenDynamics(nn.Module):
 
 @torch.no_grad()
 def surprise(dyn: FrozenDynamics, y: torch.Tensor, y_next: torch.Tensor,
-             a_exec: torch.Tensor, dt: Optional[torch.Tensor] = None
-             ) -> Dict[str, torch.Tensor]:
+             a_exec: torch.Tensor, dt: Optional[torch.Tensor] = None,
+             exo: Optional[torch.Tensor] = None) -> Dict[str, torch.Tensor]:
     """The ``(S, U)`` pair — ``D2_SURPRISE_ONLY``'s two channels.
 
     Shapes are ``[..., D]``; leading dimensions are flattened and restored, so
@@ -307,7 +321,8 @@ def surprise(dyn: FrozenDynamics, y: torch.Tensor, y_next: torch.Tensor,
     lead = y.shape[:-1]
     f = lambda x: x.reshape(-1, x.shape[-1])
     yf, ynf, ae = f(y), f(y_next), f(a_exec)
-    mu, ls = dyn(yf, ae, f(dt) if dt is not None else None)
+    mu, ls = dyn(yf, ae, f(dt) if dt is not None else None,
+                 f(exo) if exo is not None else None)
     d_real = dyn.normalise_delta(torch_state_delta(yf, ynf, dyn.model.mods))
     nu = d_real - mu
     out = {

@@ -56,9 +56,11 @@ class Field:
     conflicts: Tuple[str, ...] = ()
 
 
-#: The baseline the collector is being extended to record, per arm.  Order is
-#: the concatenation order of the state vector and is part of the contract:
-#: changing it invalidates every existing checkpoint.
+#: The per-arm quantities **this rig** can publish.  The machinery around it —
+#: :class:`Field`, :func:`resolve`, the conflict rule — is task-agnostic; this
+#: particular list is the dressing rig's, and a different robot would declare
+#: its own.  Order is the concatenation order of the state vector and is part of
+#: the contract: changing it invalidates every existing checkpoint.
 ARM_FIELDS: Tuple[Field, ...] = (
     Field("q", 7, "linear", "prop",
           ("joint", "joint_pos", "joint_position", "joint_positions"),
@@ -141,13 +143,10 @@ class PackedLayout:
                 f"{name} slice ({lo},{hi}) escapes the {self.stride}-wide arm block")
 
 
-#: ``demo_for_testing/image_trials_4.zarr``: 28 = 2 arms x (7 joint, 3 eef
-#: position, 4 eef quaternion).  Everything else in ``ARM_FIELDS`` is absent, and
-#: :func:`resolve` says so rather than inventing it.
+#: Kept so existing tests and call sites keep working; the rig's packed layout
+#: is declared once in :mod:`diffusion_policy.drim.dressing`.
 SMOKE_LAYOUT = PackedLayout(
-    stride=14,
-    slices={"q": (0, 7), "ee_pos": (7, 10), "ee_quat": (10, 14)},
-)
+    stride=14, slices={"q": (0, 7), "ee_pos": (7, 10), "ee_quat": (10, 14)})
 
 
 @dataclass

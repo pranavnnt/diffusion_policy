@@ -153,12 +153,14 @@ class DrimEpisodes:
                  n_arms: int = 2, layout: Optional[F.PackedLayout] = None,
                  action_key: str = "action", time_key: str = "timestamp",
                  require: Sequence[str] = (), warn: bool = True,
-                 image_size: Optional[Tuple[int, int]] = None):
+                 image_size: Optional[Tuple[int, int]] = None,
+                 exo_key: Optional[str] = None):
         self.zarr_paths = discover_zarrs(zarr_path)
         self.cameras = tuple(cameras)
         self.image_size = image_size
         self.n_declared = int(n_arms)
         self.action_key = action_key
+        self.exo_key = exo_key
 
         #: Resolve every store separately, then keep only what **all** of them
         #: agree on.  Two recordings that measured different fields cannot be
@@ -227,6 +229,8 @@ class DrimEpisodes:
         #: latter.  A silent mismatch there mislabels every delta channel.
         dyn_all = res.stack(tuple(self.prop_names) + tuple(self.wrench_names))
         act_all = np.asarray(rb[action_key], np.float32)
+        exo_all = (np.asarray(rb[self.exo_key], np.float32)
+                   if self.exo_key and self.exo_key in keys else None)
         time_all = (np.asarray(rb[time_key], np.float64)
                     if time_key in keys else None)
         if self.episodes:
@@ -239,7 +243,9 @@ class DrimEpisodes:
         starts = np.concatenate([[0], ends[:-1]])
         for a, b in zip(starts, ends):
             ep = {"prop": prop_all[a:b], "wrench": wrench_all[a:b],
-                  "dyn": dyn_all[a:b], "action": act_all[a:b]}
+                  "dyn": dyn_all[a:b], "action": act_all[a:b],
+                  "exo": (exo_all[a:b] if exo_all is not None
+                          else np.zeros((b - a, 0), np.float32))}
             #: ``dt`` is carried because this rig does not run at a fixed rate —
             #: the smoke episode varies from 0.05 s to 0.75 s between steps. A
             #: state *change* over a 15x-varying interval is not comparable
@@ -331,6 +337,24 @@ class DrimEpisodes:
                 "dead": [int(i) for i in np.nonzero(~moves)[0]]}
 
 
+def ee_pos_slice(res, prop_names: Sequence[str]) -> Optional[Tuple[int, int]]:
+    """Where ``ee_pos`` sits inside the stacked proprioception, if at all.
+
+    ``delta_ee_pos`` needs it, and needs it for the *first* arm only: the
+    operator nudges one end-effector pose, whatever else the state carries.
+    """
+    if "ee_pos" not in prop_names or not res.arms:
+        return None
+    off = 0
+    for a in res.arms:
+        for n in prop_names:
+            w = F.FIELDS_BY_NAME[n].dim
+            if a == res.arms[0] and n == "ee_pos":
+                return (off, off + w)
+            off += w
+    return None
+
+
 def decision_steps(n: int, spec: DrimSpec) -> np.ndarray:
     """Steps at which the slow level replans and a full target chunk exists.
 
@@ -356,11 +380,18 @@ def build_chunks(eps: DrimEpisodes, spec: DrimSpec, indices: Sequence[int]
     prev_off = spec.slow_offsets[0]
     chans = (list(spec.act_channels) if spec.act_channels
              else list(range(eps.episodes[0]["action"].shape[-1])))
+    ee = ee_pos_slice(eps.resolution, spec.prop_fields)
+    if spec.action_mode == "delta_ee_pos":
+        assert ee is not None, "delta_ee_pos needs ee_pos in the state vector"
+        assert len(chans) == ee[1] - ee[0], (
+            f"delta_ee_pos subtracts a {ee[1] - ee[0]}-wide pose from a "
+            f"{len(chans)}-wide action; they must match")
 
     out: Dict[str, List[np.ndarray]] = {
         k: [] for k in ("prop2", "wrench2", "step_prop", "step_wrench", "target",
-                        "hist_y", "hist_y_next", "hist_a", "hist_dt",
-                        "msg_valid", "episode_index", "decision_step")}
+                        "hist_y", "hist_y_next", "hist_a", "hist_exo",
+                        "hist_dt", "msg_valid", "episode_index",
+                        "decision_step")}
     for cam in spec.cameras:
         out[f"rgb2_{cam}"] = []
 
@@ -375,7 +406,12 @@ def build_chunks(eps: DrimEpisodes, spec: DrimSpec, indices: Sequence[int]
             out["wrench2"].append(w[frames])
             out["step_prop"].append(y[s:s + E])
             out["step_wrench"].append(w[s:s + E])
-            out["target"].append(a[s:s + H][:, chans])
+            tgt = a[s:s + H][:, chans]
+            if spec.action_mode == "delta_ee_pos":
+                #: relative to the pose at the step it executes on, which is
+                #: observed at inference time
+                tgt = tgt - y[s:s + H, ee[0]:ee[1]]
+            out["target"].append(tgt)
             for cam in spec.cameras:
                 out[f"rgb2_{cam}"].append(ep[cam][frames])
 
@@ -387,11 +423,13 @@ def build_chunks(eps: DrimEpisodes, spec: DrimSpec, indices: Sequence[int]
                 out["hist_y"].append(d[s - W:s])
                 out["hist_y_next"].append(d[s - W + 1:s + 1])
                 out["hist_a"].append(a[s - W:s][:, chans])
+                out["hist_exo"].append(ep["exo"][s - W:s])
                 out["hist_dt"].append(dt[s - W:s])
             else:
                 out["hist_y"].append(np.zeros((W, d.shape[-1]), np.float32))
                 out["hist_y_next"].append(np.zeros((W, d.shape[-1]), np.float32))
                 out["hist_a"].append(np.zeros((W, len(chans)), np.float32))
+                out["hist_exo"].append(np.zeros((W, ep["exo"].shape[-1]), np.float32))
                 out["hist_dt"].append(np.zeros((W, 1), np.float32))
             out["msg_valid"].append(np.float32(valid))
             out["episode_index"].append(np.int32(j))
@@ -521,12 +559,16 @@ def load_split(zarr_path: str, cameras: Sequence[str] = (), n_arms: int = 2,
                layout: Optional[F.PackedLayout] = None, val_ratio: float = 0.2,
                seed: int = 42, require: Sequence[str] = (),
                spec_kw: Optional[Dict[str, Any]] = None, warn_scale: bool = True,
-               image_size: Optional[Tuple[int, int]] = None, **kw
+               image_size: Optional[Tuple[int, int]] = None,
+               exo_key: Optional[str] = None,
+               act_scale_per_arm: Optional[Sequence[float]] = None,
+               act_per_arm: Optional[int] = None, **kw
                ) -> Tuple[Dict[str, np.ndarray], Dict[str, np.ndarray],
                           ChunkNormaliser, "DrimEpisodes", DrimSpec]:
     """Resolve the dataset, derive the spec from it, and cut it into chunks."""
     eps = DrimEpisodes(zarr_path, cameras=cameras, n_arms=n_arms, layout=layout,
-                       require=require, image_size=image_size, **kw)
+                       require=require, image_size=image_size,
+                       exo_key=exo_key, **kw)
     spec_kw = dict(spec_kw or {})
     native = eps.native_image_size()
     if native is not None:
@@ -540,7 +582,11 @@ def load_split(zarr_path: str, cameras: Sequence[str] = (), n_arms: int = 2,
     spec = from_resolution(eps.resolution, cameras=cameras,
                            act_width=all_act.shape[-1],
                            n_declared=eps.n_declared,
-                           act_range=np.abs(all_act).max(0).tolist(), **spec_kw)
+                           act_range=np.abs(all_act).max(0).tolist(),
+                           act_scale_per_arm=act_scale_per_arm,
+                           act_per_arm=act_per_arm,
+                           exo_dim=int(eps.episodes[0]["exo"].shape[-1]),
+                           **spec_kw)
     if spec.act_scale is None and warn_scale:
         warnings.warn(
             f"actions are {spec.act_dim}-wide, which is not the 3-linear + "
