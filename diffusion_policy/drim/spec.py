@@ -243,7 +243,9 @@ def fast_frac_from_demand(demand: Dict[str, Any], active: Sequence[int],
 
 def from_resolution(res, cameras: Sequence[str] = (),
                     act_width: Optional[int] = None,
-                    n_declared: Optional[int] = None, **kw) -> DrimSpec:
+                    n_declared: Optional[int] = None,
+                    act_range: Optional[Sequence[float]] = None,
+                    **kw) -> DrimSpec:
     """Build a spec from what a dataset actually measured.
 
     The widths are a consequence of the resolution, never an argument: a spec
@@ -272,6 +274,16 @@ def from_resolution(res, cameras: Sequence[str] = (),
         if act_width is not None:
             chans = tuple(c for c in chans if c < act_width)
     scale = kw.pop("act_scale", None)
+    if scale is None and per_arm == ACT_PER_ARM and act_range is not None:
+        #: The declared scale describes what the *joystick* can command. A
+        #: scripted controller is under no obligation to stay inside it — the
+        #: 0909 zigzag runs to 0.08 m/s against a declared 0.02 — and a target
+        #: beyond the scale is unreachable once the sampler clamps. So the
+        #: declaration is used only when the recording actually fits inside it.
+        if any(r > s_ for r, s_ in zip(act_range, [ARM_ACT_SCALE[c % ACT_PER_ARM]
+                                                   for c in chans])):
+            scale = None
+            per_arm = -1                 # skip the branch below
     if scale is None and per_arm == ACT_PER_ARM:
         #: ``ARM_ACT_SCALE`` describes one specific action layout — 3 linear
         #: m/s then 3 angular rad/s. Applying it to an action of a different

@@ -284,6 +284,22 @@ def detectors(summary: Dict[str, Any]) -> List[str]:
                    f"demonstration -> rolled"
                    + ("" if r < 2 else "  <-- D2 conditions on values it never "
                                        "saw in training"))
+    tb = summary.get("trivial_action_baselines") or {}
+    if tb:
+        best = None
+        for st in ("D2", "B1", "B0"):
+            c = (summary.get(st) or {}).get("curve") or []
+            am = [r["action_mse"] for r in c if "action_mse" in r]
+            if am:
+                best = min(am) if best is None else min(best, min(am))
+        if best is not None:
+            copy = tb["repeat_first_action"]
+            ok = best < copy
+            out.append(f"{'OK  ' if ok else 'FAIL'} best action_mse {best:.5f} vs "
+                       f"copycat {copy:.5f}"
+                       + ("" if ok else "  <-- holding the previous action beats "
+                                        "every trained stage; this action target "
+                                        "is degenerate"))
     dv = (summary.get("diagnostics") or {}).get("divergence") or {}
     if "compounding_factor" in dv:
         c = dv["compounding_factor"]

@@ -721,3 +721,43 @@ def test_detectors_flag_a_surprise_that_shifts_out_of_distribution():
     from diffusion_policy.drim import diagnose as DG
     v = DG.detectors({"diagnostics": {"surprise_shift": {"p99_ratio": 28.9}}})
     assert v[0].startswith("WARN") and "never saw in training" in v[0]
+
+
+def test_trivial_action_baseline_catches_a_degenerate_target():
+    """A position target the controller already tracks is nearly free to predict."""
+    from diffusion_policy.drim.dataset import trivial_action_baselines
+    spec = tiny_spec(pred_horizon=8, exec_horizon=4)
+    #: a slowly drifting target: holding the first action is almost exact
+    #: a position-like target: large offset, tiny per-chunk drift
+    slow = (np.linspace(-1, 1, 6)[:, None, None]
+            + np.cumsum(np.full((6, 8, spec.act_dim), 0.001, np.float32), axis=1))
+    b = trivial_action_baselines({"target": slow.astype(np.float32)}, spec)
+    assert b["repeat_first_action"] < 0.01 * b["predict_zero"]
+    #: a target that alternates: holding is useless
+    fast = np.zeros((6, 8, spec.act_dim), np.float32)
+    fast[:, ::2] = 1.0; fast[:, 1::2] = -1.0
+    b2 = trivial_action_baselines({"target": fast}, spec)
+    assert b2["repeat_first_action"] > b2["predict_zero"]
+
+
+def test_verdict_fails_when_the_copycat_wins():
+    from diffusion_policy.drim import diagnose as DG
+    v = DG.detectors({"trivial_action_baselines": {"repeat_first_action": 0.0002,
+                                                   "predict_zero": 0.18},
+                      "B0": {"curve": [{"epoch": 10, "action_mse": 0.017}]}})
+    assert any(x.startswith("FAIL") and "degenerate" in x for x in v)
+
+
+def test_unreachable_targets_are_flagged():
+    """sample_chunk clamps to [-1,1]; a target beyond it cannot be produced."""
+    from diffusion_policy.drim.spec import from_resolution, ARM_ACT_SCALE
+    res = FL.resolve(_packed_source(arm2_live=False), n_arms=2,
+                     layout=FL.SMOKE_LAYOUT, warn=False)
+    #: within the declared command scale -> the declaration is used
+    ok = from_resolution(res, act_width=6, n_declared=1,
+                         act_range=[0.01, 0.01, 0.01, 0.02, 0.02, 0.02])
+    assert ok.act_scale == ARM_ACT_SCALE
+    #: beyond it -> fall back to the observed range rather than clamp the target
+    over = from_resolution(res, act_width=6, n_declared=1,
+                           act_range=[0.08, 0.01, 0.01, 0.02, 0.02, 0.02])
+    assert over.act_scale is None

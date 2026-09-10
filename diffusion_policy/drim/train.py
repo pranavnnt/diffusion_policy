@@ -34,7 +34,8 @@ from diffusion_policy.drim import policy as PL
 from diffusion_policy.drim import selection as SEL
 from diffusion_policy.drim import fields as F
 from diffusion_policy.drim.dataset import (ChunkNormaliser, load_split,
-                                           action_residual_demand)
+                                           action_residual_demand,
+                                           trivial_action_baselines)
 from diffusion_policy.drim.spec import (DrimSpec, DRESSING_HORIZONS,
                                         DRESSING_CAMERAS,
                                         fast_limits_from_fraction,
@@ -638,6 +639,12 @@ def run(zarr_path: Any, out_dir: str, seed: int = 0,
         log(f"[data] action channels never nonzero: {act['dead']} "
             f"(active: {act['active']})")
     demand = action_residual_demand(tr, spec)
+    trivial = trivial_action_baselines(va, spec)
+    if trivial:
+        log(f"[baseline] executed-prefix error with no policy: "
+            f"predict-zero {trivial['predict_zero']:.5f}, "
+            f"repeat-previous {trivial['repeat_first_action']:.5f}"
+            f"   <- action_mse must beat the second one")
 
     auto_frac = (fast_frac == "auto")
     if fast_frac is not None:
@@ -692,6 +699,7 @@ def run(zarr_path: Any, out_dir: str, seed: int = 0,
                              for s in res.statuses if s.note]},
         "action_channels": act,
         "residual_demand": demand, "fast_frac": summary_frac,
+        "trivial_action_baselines": trivial,
         "dt": getattr(eps, "dt_stats", None),
         "normaliser": norm.state_dict()}
 

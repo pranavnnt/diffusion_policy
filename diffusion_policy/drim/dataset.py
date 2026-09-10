@@ -449,6 +449,33 @@ def action_residual_demand(chunks: Dict[str, np.ndarray], spec: DrimSpec
             "note": "normalised action units; 1.0 = full command"}
 
 
+def trivial_action_baselines(chunks: Dict[str, np.ndarray], spec: DrimSpec
+                             ) -> Dict[str, float]:
+    """What the executed-prefix error is without a policy at all.
+
+    The action analogue of the dynamics' no-change baseline, and needed for the
+    same reason: an error that looks small says nothing until you know what
+    small is for this target.  ``repeat`` is the copycat — hold the previous
+    action for the whole chunk — and it is the bar a learned policy has to clear
+    to be doing anything.
+
+    It is not a formality.  On the 0909 recording with ``--action-key action``
+    (an end-effector *position target*, which the controller tracks to within
+    8 mm) the copycat scores 0.00024 while a trained ``B0`` scores 0.017: the
+    per-chunk variation is far below the flow policy's own sampling spread, so
+    the target is nearly degenerate and no stage comparison on it means
+    anything.  ``zigzag_action`` — the commanded velocity — leaves the copycat
+    at 0.364 and is the target with room in it.
+    """
+    tgt = np.asarray(chunks["target"], np.float64)[:, :spec.exec_horizon]
+    if tgt.size == 0:
+        return {}
+    #: the chunk's own first action, held — the information a copycat has
+    hold = np.repeat(tgt[:, :1], spec.exec_horizon, axis=1)
+    return {"predict_zero": float(np.mean(tgt ** 2)),
+            "repeat_first_action": float(np.mean((tgt - hold) ** 2))}
+
+
 def episode_split(n_episodes: int, val_ratio: float = 0.2, seed: int = 42,
                   sources: Optional[Sequence[int]] = None
                   ) -> Tuple[np.ndarray, np.ndarray]:
@@ -509,9 +536,11 @@ def load_split(zarr_path: str, cameras: Sequence[str] = (), n_arms: int = 2,
         #: ~90% of the frame, matching the ratio the 240x320 default used.
         spec_kw["crop_shape"] = (int(round(native[0] * 0.9)),
                                  int(round(native[1] * 0.9)))
+    all_act = np.concatenate([e["action"] for e in eps.episodes])
     spec = from_resolution(eps.resolution, cameras=cameras,
-                           act_width=eps.episodes[0]["action"].shape[-1],
-                           n_declared=eps.n_declared, **spec_kw)
+                           act_width=all_act.shape[-1],
+                           n_declared=eps.n_declared,
+                           act_range=np.abs(all_act).max(0).tolist(), **spec_kw)
     if spec.act_scale is None and warn_scale:
         warnings.warn(
             f"actions are {spec.act_dim}-wide, which is not the 3-linear + "
@@ -552,4 +581,20 @@ def load_split(zarr_path: str, cameras: Sequence[str] = (), n_arms: int = 2,
             "ones and every offline number below is a training number.",
             stacklevel=2)
         va = tr
+    #: The flow sampler clamps its output to [-1, 1], so a normalised target
+    #: outside that interval is not merely hard to fit — it is unreachable for
+    #: any parameter values, and the loss floor it creates is invisible in the
+    #: curve.  The 0909 zigzag script commands up to 0.08 m/s where the joystick
+    #: scale declares 0.02, which would put every target at 4x the reachable
+    #: range.  Checked after normalisation, which is the only place it shows.
+    if warn_scale and len(tr.get("target", ())):
+        frac = float((np.abs(tr["target"]) > 1.0).any(-1).mean())
+        if frac > 0.01:
+            mx = np.abs(np.asarray(tr["target"])).reshape(
+                -1, tr["target"].shape[-1]).max(0)
+            warnings.warn(
+                f"{frac:.1%} of target actions fall outside [-1, 1] after "
+                f"normalisation (per-channel |max| "
+                f"{np.round(mx, 2).tolist()}). sample_chunk clamps to [-1, 1], "
+                f"so those are unreachable by construction.", stacklevel=2)
     return tr, va, norm, eps, spec
