@@ -877,3 +877,40 @@ def test_detector_flags_a_policy_that_reads_the_light():
     assert hot[0].startswith("WARN") and "reading the light" in hot[0]
     cool = DG.detectors({"diagnostics": {"illumination": {"worst_over_spread": 0.2}}})
     assert cool[0].startswith("OK")
+
+
+# --------------------------------------------------------------------------- #
+# 14. the hand-drawn ROI tool
+# --------------------------------------------------------------------------- #
+
+
+def _fake_cam(n=40, H=64, W=80, n_ep=4):
+    """Frames whose motion sits in one corner and whose brightness is per-episode."""
+    rng = np.random.default_rng(0)
+    ep = np.repeat(np.arange(n_ep), n // n_ep)
+    s = np.full((n, H, W), 100.0, np.float32)
+    s += (ep * 10.0)[:, None, None]                 # a per-episode light level
+    s[:, 8:24, 8:24] += rng.normal(0, 30, (n, 16, 16))   # the only moving region
+    return {"sample": s, "energy": np.abs(np.diff(s, axis=0)).mean(0), "ep": ep}
+
+
+def test_box_stats_report_energy_resampling_and_separability():
+    from diffusion_policy.drim import roi_tool as R
+    c = _fake_cam()
+    on = R._box_stats(c, (8, 8, 16, 16), (16, 16))
+    off = R._box_stats(c, (40, 56, 16, 16), (16, 16))
+    #: the moving corner is 5 % of the frame but holds most of the energy;
+    #: the rest is not zero because the per-episode light level steps at each
+    #: boundary, which is exactly the cue d' is there to catch
+    assert on["energy"] > 10 * off["energy"]
+    #: 16x16 into a 16x16 input is exactly 1.00 native pixels per output pixel
+    assert on["px_per_out"] == pytest.approx(1.0)
+    assert R._box_stats(c, (0, 0, 32, 32), (16, 16))["px_per_out"] == pytest.approx(4.0)
+    #: the still region carries the per-episode light level and nothing else,
+    #: so episodes are perfectly separable there
+    assert off["d_prime"] > on["d_prime"]
+
+
+def test_box_stats_ignore_a_degenerate_box():
+    from diffusion_policy.drim import roi_tool as R
+    assert R._box_stats(_fake_cam(), (0, 0, 2, 2), (16, 16)) == {}
