@@ -98,6 +98,14 @@ ROI: Dict[str, Tuple[int, int, int, int]] = {
     "image_bed_back": (128, 0, 336, 448),
 }
 
+#: The bed-front camera faces a window.  Between-episode brightness std is 6.7
+#: against 2.5 within one, and the colour shifts with it (R sits ~10 below G/B,
+#: by a margin that tracks the level).  Five episodes from one session already
+#: show that; different times of day would show much more, and with every
+#: episode a success nothing in the data discourages keying on it.
+PHOTOMETRIC = dict(brightness=0.3, contrast=0.3, saturation=0.3,
+                   channel_gain=0.12)
+
 CAMERAS_0909: Tuple[str, ...] = ("image_bed_front", "image_bed_back")
 CAMERAS_SMOKE: Tuple[str, ...] = ("image_arm1", "image_bed_front")
 
@@ -115,6 +123,7 @@ def profile(cameras: Optional[Sequence[str]] = None) -> Dict[str, Any]:
         "cameras": tuple(CAMERAS_0909 if cameras is None else cameras),
         "image_size": IMAGE_SIZE,
         "roi": ROI,
+        "photometric": PHOTOMETRIC,
         "action_mode": "delta_ee_pos",
         "exo_key": "zigzag_action",
         "act_scale_per_arm": ARM_ACT_SCALE,

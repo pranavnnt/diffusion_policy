@@ -381,6 +381,75 @@ def main(argv=None) -> int:
     return 0
 
 
+@torch.no_grad()
+def illumination_sensitivity(model, batch, message_of=None,
+                             brightness: float = 0.15,
+                             warm: Sequence[float] = (1.10, 1.0, 0.92),
+                             cool: Sequence[float] = (0.92, 1.0, 1.10)
+                             ) -> Dict[str, Any]:
+    """How far the action moves when only the lighting changes.
+
+    The check that decides whether the augmentation is doing anything. A policy
+    trained on a handful of episodes recorded in one session can key on
+    illumination as a cue for *which episode it is in* — a shortcut straight to
+    the demonstrated trajectory that does not survive a different hour — and
+    with every episode a success, nothing in the data discourages it.
+
+    The perturbations are sized from what was measured on this rig: a 15 %
+    brightness change is about twice the between-episode spread, and the warm
+    and cool channel gains reproduce the direction of the daylight shift (R
+    below G and B, or the reverse).
+
+    Reported **relative to the policy's own sampling spread**, because that is
+    the scale that decides whether it matters: a shift smaller than the noise
+    between two draws at the same state is not a shift the robot will feel.
+    """
+    from diffusion_policy.drim.augment import shift_illumination
+
+    if not model.spec.is_image:
+        return {}
+    model.eval()
+    n = len(batch["target"])
+    noise = torch.zeros(n, model.horizon, model.act_dim,
+                        device=batch["prop2"].device)
+
+    def chunk(fn) -> torch.Tensor:
+        rgb = {}
+        for c in model.spec.cameras:
+            x = batch[f"rgb2_{c}"]
+            b, t = x.shape[:2]
+            f = x.reshape(b * t, *x.shape[2:]).permute(0, 3, 1, 2).float() / 255.0
+            f = fn(f).permute(0, 2, 3, 1).mul(255.0).round().clamp(0, 255)
+            rgb[c] = f.reshape(b, t, *x.shape[2:]).to(x.dtype)
+        ctx = model.context(rgb, batch["prop2"], batch.get("wrench2"))
+        msg = message_of(model, batch) if message_of is not None else None
+        return model.sample_chunk(ctx, msg, noise)
+
+    base = chunk(lambda f: f)
+    out: Dict[str, Any] = {}
+    for name, fn in (("brighter", lambda f: shift_illumination(f, brightness)),
+                     ("darker", lambda f: shift_illumination(f, -brightness)),
+                     ("warm", lambda f: shift_illumination(f, 0.0, warm)),
+                     ("cool", lambda f: shift_illumination(f, 0.0, cool))):
+        out[name] = float((chunk(fn) - base).abs().mean().item())
+
+    #: the policy's own spread between two draws at the same state
+    g = torch.Generator(device="cpu").manual_seed(0)
+    d1 = model.sample_chunk(
+        model.context({c: batch[f"rgb2_{c}"] for c in model.spec.cameras},
+                      batch["prop2"], batch.get("wrench2")), None,
+        torch.randn(n, model.horizon, model.act_dim, generator=g).to(base.device))
+    spread = float((d1 - base).abs().mean().item())
+    model.train()
+    worst = max(out.values())
+    out["sampling_spread"] = spread
+    out["worst_over_spread"] = float(worst / max(spread, 1e-9))
+    out["note"] = ("action shift under a lighting-only change, in normalised "
+                   "action units, against the spread between two draws at the "
+                   "same state")
+    return out
+
+
 def detectors(summary: Dict[str, Any]) -> List[str]:
     """The one-line verdicts worth reading before anything reaches the robot."""
     out: List[str] = []
@@ -425,6 +494,14 @@ def detectors(summary: Dict[str, Any]) -> List[str]:
                        + ("" if ok else "  <-- holding the previous action beats "
                                         "every trained stage; this action target "
                                         "is degenerate"))
+    il = (summary.get("diagnostics") or {}).get("illumination") or {}
+    if "worst_over_spread" in il:
+        r = il["worst_over_spread"]
+        out.append(f"{'OK  ' if r < 0.5 else 'WARN'} lighting-only action shift "
+                   f"is {r:.2f}x the policy's own sampling spread"
+                   + ("" if r < 0.5 else "  <-- the policy is reading the light; "
+                                         "widen the photometric jitter or record "
+                                         "across more of the day"))
     dv = (summary.get("diagnostics") or {}).get("divergence") or {}
     if "compounding_factor" in dv:
         c = dv["compounding_factor"]

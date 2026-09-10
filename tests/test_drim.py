@@ -806,3 +806,53 @@ def test_ee_slice_is_found_in_the_dynamics_modality_table():
     mods = FL.modalities(res, res.prop_names())
     assert _ee_slice(mods) == (7, 10)
     assert _ee_slice([("arm1_q", (0, 7), 7, "linear")]) is None
+
+
+# --------------------------------------------------------------------------- #
+# 13. photometric augmentation
+# --------------------------------------------------------------------------- #
+
+
+def test_jitter_is_per_image_not_per_batch():
+    """A batch-wide jitter leaves episodes separable by their lighting."""
+    from diffusion_policy.drim.augment import PhotometricJitter
+    j = PhotometricJitter().train()
+    x = torch.full((8, 3, 16, 16), 0.5)
+    y = j(x, generator=torch.Generator().manual_seed(0))
+    per_image = y.mean((1, 2, 3))
+    assert float(per_image.std()) > 1e-3, "every image got the same jitter"
+
+
+def test_jitter_is_a_no_op_at_eval():
+    from diffusion_policy.drim.augment import PhotometricJitter
+    j = PhotometricJitter().eval()
+    x = torch.rand(4, 3, 8, 8)
+    assert torch.equal(j(x), x)
+
+
+def test_jitter_stays_in_range():
+    from diffusion_policy.drim.augment import PhotometricJitter
+    j = PhotometricJitter(brightness=0.9, contrast=0.9, saturation=0.9,
+                          channel_gain=0.5).train()
+    y = j(torch.rand(16, 3, 8, 8))
+    assert float(y.min()) >= 0.0 and float(y.max()) <= 1.0
+
+
+def test_deterministic_shift_is_separate_from_the_random_one():
+    """The probe must not depend on a seed, or the measurement moves with it."""
+    from diffusion_policy.drim.augment import shift_illumination
+    x = torch.full((2, 3, 4, 4), 0.5)
+    a = shift_illumination(x, 0.2)
+    b = shift_illumination(x, 0.2)
+    assert torch.equal(a, b)
+    assert torch.allclose(a, torch.full_like(a, 0.6))
+    warm = shift_illumination(x, 0.0, (1.1, 1.0, 0.9))
+    assert warm[0, 0, 0, 0] > warm[0, 2, 0, 0]
+
+
+def test_detector_flags_a_policy_that_reads_the_light():
+    from diffusion_policy.drim import diagnose as DG
+    hot = DG.detectors({"diagnostics": {"illumination": {"worst_over_spread": 1.4}}})
+    assert hot[0].startswith("WARN") and "reading the light" in hot[0]
+    cool = DG.detectors({"diagnostics": {"illumination": {"worst_over_spread": 0.2}}})
+    assert cool[0].startswith("OK")

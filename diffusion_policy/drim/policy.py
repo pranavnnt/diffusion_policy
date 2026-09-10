@@ -35,6 +35,7 @@ from diffusion_policy.model.vision.model_getter import get_resnet
 from diffusion_policy.model.vision.multi_image_obs_encoder import MultiImageObsEncoder
 
 from diffusion_policy.drim import nets as N
+from diffusion_policy.drim.augment import PhotometricJitter
 from diffusion_policy.drim.spec import DrimSpec
 
 VARIANTS = ("B0", "B1", "D2")
@@ -78,7 +79,8 @@ class DrimPolicy(nn.Module):
     def __init__(self, variant: str, spec: DrimSpec,
                  core: Optional["DrimPolicy"] = None,
                  message_in_dims: Optional[Tuple[int, int]] = None,
-                 freeze_base: bool = True):
+                 freeze_base: bool = True,
+                 photometric: Optional[PhotometricJitter] = None):
         super().__init__()
         if variant not in VARIANTS:
             raise KeyError(f"unknown variant {variant!r}; have {VARIANTS}")
@@ -93,8 +95,14 @@ class DrimPolicy(nn.Module):
         if spec.is_image:
             self.vision = (core.vision if core is not None
                            else build_vision(spec))
+            #: Inherited with the vision encoder: a later stage that augmented
+            #: differently from the frozen trunk it nests on would be measuring
+            #: the augmentation, not the stage.
+            self.photometric = (core.photometric if core is not None
+                                else (photometric or PhotometricJitter()))
         else:
             self.vision = None
+            self.photometric = None
 
         # -- slow -----------------------------------------------------------
         #: The flow field must exist at the final frame width *before* anything
@@ -164,7 +172,10 @@ class DrimPolicy(nn.Module):
             x = x.reshape(b * n, *x.shape[2:])
             if x.shape[-1] == 3:                       # [B*n, H, W, 3] -> NCHW
                 x = x.permute(0, 3, 1, 2)
-            flat[k] = x.float() / 255.0
+            x = x.float() / 255.0
+            if self.photometric is not None:
+                x = self.photometric(x)
+            flat[k] = x
         f = self.vision(flat)
         return f.reshape(b, n, -1)
 

@@ -37,6 +37,7 @@ from diffusion_policy.drim.dataset import (ChunkNormaliser, load_split,
                                            action_residual_demand,
                                            trivial_action_baselines)
 from diffusion_policy.drim import dressing as DRESS
+from diffusion_policy.drim.augment import PhotometricJitter
 from diffusion_policy.drim.spec import (DrimSpec, fast_limits_from_fraction,
                                         fast_frac_from_demand)
 
@@ -303,9 +304,10 @@ def action_mse(model, va, device, batch=64, seed=NOISE_SEED,
 _valid_action_mse = action_mse                       # older call sites
 
 
-def train_b0(spec, tr, va, seed, epochs, device, log) -> Dict[str, Any]:
+def train_b0(spec, tr, va, seed, epochs, device, log,
+             photometric=None) -> Dict[str, Any]:
     torch.manual_seed(seed)
-    model = PL.build("B0", spec).to(device)
+    model = PL.build("B0", spec, photometric=photometric).to(device)
     params = [p for p in model.parameters() if p.requires_grad]
     opt = torch.optim.AdamW(params, lr=LR_FLOW, weight_decay=WEIGHT_DECAY)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=epochs)
@@ -611,6 +613,7 @@ def run(zarr_path: Any, out_dir: str, seed: int = 0,
         act_scale_per_arm: Optional[Sequence[float]] = None,
         act_per_arm: Optional[int] = None,
         roi: Optional[Dict[str, Any]] = None,
+        photometric: Optional[Dict[str, float]] = None,
         image_size: Optional[Tuple[int, int]] = None,
         horizons: Optional[Dict[str, Any]] = None,
         estimator: str = SEL.DEFAULT_ESTIMATOR, keep_grid: bool = True,
@@ -722,6 +725,7 @@ def run(zarr_path: Any, out_dir: str, seed: int = 0,
                              for s in res.statuses if s.note]},
         "action_channels": act,
         "residual_demand": demand, "fast_frac": summary_frac,
+        "photometric": photometric,
         "trivial_action_baselines": trivial,
         "dt": getattr(eps, "dt_stats", None),
         "normaliser": norm.state_dict()}
@@ -767,9 +771,15 @@ def run(zarr_path: Any, out_dir: str, seed: int = 0,
             log(f"      WARNING {sel['overfit_warning']}")
         return out
 
+    jitter = (PhotometricJitter(**photometric)
+              if (photometric and spec.is_image) else None)
+    if jitter is not None:
+        log(f"[augment] {jitter.extra_repr()}")
+
     if "B0" in stages:
         log("[stage] B0")
-        r = train_b0(spec, t_tr, t_va, seed, epochs["B0"], device, log)
+        r = train_b0(spec, t_tr, t_va, seed, epochs["B0"], device, log,
+                     photometric=jitter)
         models["B0"] = r.pop("model")
         summary["B0"] = _save("B0", r)
 
@@ -837,10 +847,20 @@ def run(zarr_path: Any, out_dir: str, seed: int = 0,
         except Exception as exc:                       # pragma: no cover
             log(f"      diagnostics failed: {type(exc).__name__}: {exc}")
             diag["error"] = f"{type(exc).__name__}: {exc}"
+        b = _batch(t_va, slice(0, min(32, len(va["target"]))), device)
         if "D2" in models:
-            b = _batch(t_va, slice(0, min(32, len(va["target"]))), device)
             diag["message_reliance"] = DG.message_reliance(
                 models["D2"], b, _message)
+        if spec.is_image:
+            diag["illumination"] = DG.illumination_sensitivity(
+                last, b, _message if "D2" in models else None)
+            il = diag["illumination"]
+            if il:
+                log(f"      lighting shift: brighter {il['brighter']:.4f} "
+                    f"darker {il['darker']:.4f} warm {il['warm']:.4f} "
+                    f"cool {il['cool']:.4f}  vs sampling spread "
+                    f"{il['sampling_spread']:.4f} "
+                    f"({il['worst_over_spread']:.2f}x)")
         summary["diagnostics"] = diag
         d = diag.get("divergence") or {}
         for k, v in (d.get("at") or {}).items():
@@ -996,6 +1016,7 @@ def main(argv=None) -> int:
         act_scale_per_arm=prof.pop("act_scale_per_arm", None),
         act_per_arm=prof.pop("act_per_arm", None),
         roi=prof.pop("roi", None),
+        photometric=prof.pop("photometric", None),
         horizons=prof,
         estimator=a.estimator, keep_grid=not a.no_keep_grid, epochs=ep,
         diagnose=not a.no_diagnose, diag_steps=a.diag_steps,
