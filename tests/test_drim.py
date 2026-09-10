@@ -1006,3 +1006,81 @@ def test_an_image_policy_encodes_a_batch_end_to_end():
 def test_a_state_only_spec_has_no_vision_or_jitter():
     m = PL.build("B0", tiny_spec())
     assert m.vision is None and m.photometric is None
+
+
+# --------------------------------------------------------------------------- #
+# 16. the rollout must hand the dynamics the primitive it was trained with
+# --------------------------------------------------------------------------- #
+
+
+class _Eps:
+    """Two short episodes with a nonzero exogenous command."""
+
+    def __init__(self, spec, mods, n=48, n_ep=2):
+        from diffusion_policy.drim import dynamics as D
+        rng = np.random.default_rng(0)
+        dim = D.state_dim(mods)
+        self.episodes = []
+        for _ in range(n_ep):
+            y = rng.normal(0, 0.1, (n, dim)).astype(np.float32)
+            y[:, 3:7] /= np.linalg.norm(y[:, 3:7], axis=1, keepdims=True)
+            self.episodes.append({
+                "dyn": y, "prop": y[:, :spec.prop_dim],
+                "wrench": np.zeros((n, spec.wrench_dim), np.float32),
+                "action": rng.normal(0, 0.1, (n, spec.act_dim)).astype(np.float32),
+                "exo": rng.normal(0, 0.1, (n, spec.exo_dim)).astype(np.float32),
+                "dt": np.full((n, 1), 0.07, np.float32)})
+        self.dt_stats = {"mean": 0.07}
+
+    def __len__(self):
+        return len(self.episodes)
+
+
+def _exo_setup():
+    from diffusion_policy.drim import dynamics as D
+    from diffusion_policy.drim.dataset import ChunkNormaliser
+    mods = [("arm1_p", (0, 3), 3, "linear"), ("arm1_ee_rot", (3, 7), 3, "quat")]
+    spec = DrimSpec(prop_dim=7, act_dim=3, wrench_dim=0, cameras=(),
+                    pred_horizon=4, exec_horizon=2, message_window=2,
+                    fast_limits=(0.15,) * 3, exo_dim=3)
+    m = D.DeltaDynamics(mods, spec.act_dim, exo_dim=spec.exo_dim).eval()
+    eps = _Eps(spec, mods)
+    ys = np.concatenate([e["dyn"] for e in eps.episodes])
+    ds = D.state_delta(ys[:-1], ys[1:], mods)
+    dyn = D.FrozenDynamics(m, D.Normaliser(y=ys, d=ds))
+    norm = ChunkNormaliser({"prop2": ys[:, None, :spec.prop_dim],
+                            "target": np.concatenate(
+                                [e["action"] for e in eps.episodes])[:, None]})
+    return spec, mods, eps, norm, dyn
+
+
+def test_the_dynamics_refuses_a_rollout_that_withholds_the_primitive():
+    """The bug this covers killed the diagnostics after a full image run."""
+    from diffusion_policy.drim import dynamics as D
+    spec, mods, eps, norm, dyn = _exo_setup()
+    with pytest.raises(AssertionError, match="exo_dim > 0"):
+        dyn(torch.zeros(1, 7), torch.zeros(1, 3), torch.zeros(1, 1))
+
+
+def test_divergence_runs_with_an_exogenous_command():
+    from diffusion_policy.drim import diagnose as DG
+    spec, mods, eps, norm, dyn = _exo_setup()
+    model = PL.build("B1", spec, core=PL.build("B0", spec))
+    out = DG.divergence(model, dyn, mods, eps, norm, spec, [0, 1],
+                        n_steps=4, n_starts=4, seed=0)
+    assert out and "at" in out and out["at"]
+    step = out["at"]["step1"]
+    #: the millimetre column and the replay floor are both populated
+    assert "policy_ee_mm" in step and "replay_ee_mm" in step
+    assert step["seconds"] == pytest.approx(0.07, abs=1e-6)
+
+
+def test_surprise_shift_runs_with_an_exogenous_command():
+    from diffusion_policy.drim import diagnose as DG
+    spec, mods, eps, norm, dyn = _exo_setup()
+    model = PL.build("B0", spec)
+    roll = DG.rollout(model, dyn, mods, eps, norm, spec, [0, 1],
+                      n_steps=4, n_starts=4)
+    out = DG.surprise_shift(dyn, mods, eps, norm, spec,
+                            roll.get("rolled_states"), [0, 1])
+    assert "demonstration" in out and "rolled" in out and "p99_ratio" in out

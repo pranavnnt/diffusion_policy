@@ -136,7 +136,13 @@ def rollout(model, dyn: DY.FrozenDynamics, mods, eps, norm, spec: DrimSpec,
                 a_raw = torch.as_tensor(ep["action"][t:t + 1][:, chans],
                                         dtype=torch.float32, device=device)
             dt = torch.as_tensor(ep["dt"][t:t + 1], dtype=torch.float32, device=device)
-            mu, _ = dyn(y, a_raw, dt)
+            #: The zigzag is a known input at inference, so a rollout that
+            #: withheld it would be measuring a model queried outside the
+            #: conditions it was fitted under -- and with exo_dim > 0 the
+            #: dynamics refuses outright rather than quietly guessing.
+            xo = (torch.as_tensor(ep["exo"][t:t + 1], dtype=torch.float32,
+                                  device=device) if spec.exo_dim else None)
+            mu, _ = dyn(y, a_raw, dt, xo)
             d_raw = mu * torch.as_tensor(dyn.norm.ds, device=device) + \
                 torch.as_tensor(dyn.norm.dm, device=device)
             y_next = DY.torch_apply_delta(y, d_raw, mods)
@@ -222,22 +228,25 @@ def surprise_shift(dyn, mods, eps, norm, spec, rolled: np.ndarray,
     of moves between the two, and by a lot.  A large shift here means D2 is
     conditioned at inference on values it never saw in training.
     """
-    ys, yns, acts, dts = [], [], [], []
+    ys, yns, acts, dts, xos = [], [], [], [], []
     chans = list(spec.act_channels) or list(range(spec.act_dim))
     for j in episodes:
         ep = eps.episodes[j]
         ys.append(ep["dyn"][:-1]); yns.append(ep["dyn"][1:])
         acts.append(ep["action"][:-1][:, chans]); dts.append(ep["dt"][:-1])
+        xos.append(ep["exo"][:-1])
     f = lambda xs: torch.as_tensor(np.concatenate(xs), dtype=torch.float32,
                                    device=device)
-    train = DY.surprise(dyn, f(ys), f(yns), f(acts), f(dts))
+    xo_all = f(xos) if spec.exo_dim else None
+    train = DY.surprise(dyn, f(ys), f(yns), f(acts), f(dts), xo_all)
     out = {"demonstration": DY.clip_report(train["S_RAW"].cpu().numpy()),
            "saturation_U": DY.saturation(train["U"].cpu().numpy())}
     if rolled is not None and len(rolled) > 2:
         r = torch.as_tensor(rolled, dtype=torch.float32, device=device)
         a = f(acts)[:len(r) - 1]
         d = f(dts)[:len(r) - 1]
-        roll = DY.surprise(dyn, r[:-1][:len(a)], r[1:][:len(a)], a, d)
+        roll = DY.surprise(dyn, r[:-1][:len(a)], r[1:][:len(a)], a, d,
+                           xo_all[:len(a)] if xo_all is not None else None)
         out["rolled"] = DY.clip_report(roll["S_RAW"].cpu().numpy())
         dm, rm = out["demonstration"], out["rolled"]
         out["p99_ratio"] = float(rm["p99"] / max(dm["p99"], 1e-9))
