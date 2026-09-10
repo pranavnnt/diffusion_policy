@@ -800,6 +800,23 @@ def test_every_roi_candidate_stays_inside_the_native_frame():
             assert 0 <= x0 and x0 + w <= 640, (name, cam)
 
 
+def test_the_hand_drawn_boxes_are_registered():
+    from diffusion_policy.drim import dressing as D
+    assert D.ROIS["custom"] is D.ROI_CUSTOM
+    assert D.ROIS["custom43"] is D.ROI_CUSTOM_43
+
+
+def test_the_43_variant_actually_matches_the_encoder_aspect():
+    """Anything else is resized anisotropically, differently per camera."""
+    from diffusion_policy.drim import dressing as D
+    want = D.IMAGE_SIZE[1] / D.IMAGE_SIZE[0]
+    for cam, (_, _, h, w) in D.ROI_CUSTOM_43.items():
+        assert abs(w / h - want) < 0.01, cam
+    #: and the hand-drawn originals are not, which is why both are kept
+    assert any(abs(w / h - want) > 0.05
+               for _, _, h, w in D.ROI_CUSTOM.values())
+
+
 def test_the_mid_roi_needs_no_resampling():
     """It is exactly the encoder's input size, so no interpolation happens."""
     from diffusion_policy.drim import dressing as D

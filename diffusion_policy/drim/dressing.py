@@ -122,8 +122,31 @@ ROI_HAND: Dict[str, Tuple[int, int, int, int]] = {
     "image_bed_front": (40, 352, 168, 224),
     "image_bed_back": (152, 56, 168, 224),
 }
+#: Drawn by hand on 2026-09-10 with :mod:`~diffusion_policy.drim.roi_tool`,
+#: which is why it keeps less motion energy than the measured boxes and is the
+#: better default anyway: a person can see that the arm and the bed edge are
+#: what make the cloth's position readable, and motion energy cannot.
+#:
+#: **These are not 3:4.** The encoder input is 240x320, so the front box
+#: (318x302, nearly square) is squashed vertically by 0.755 and stretched
+#: horizontally by 1.060 — anisotropic by 1.40x — and the back box by 1.17x.
+#: A consistent distortion is learnable, but the two cameras get *different*
+#: ones, so the same object is a different shape in each. ``*_43`` below are
+#: the same boxes forced to 3:4 about the same centre, kept for comparison.
+ROI_CUSTOM: Dict[str, Tuple[int, int, int, int]] = {
+    "image_bed_front": (32, 181, 318, 302),   # energy 49%, px/out 1.25, d' 2.1
+    "image_bed_back": (179, 119, 281, 319),   # energy 46%, px/out 1.17, d' 0.5
+}
+#: ``ROI_CUSTOM`` grown to the encoder's aspect: no distortion, and it happens
+#: to keep more of the action (63 % / 52 % against 49 % / 46 %) because the
+#: growth is sideways, which is where the arm is.
+ROI_CUSTOM_43: Dict[str, Tuple[int, int, int, int]] = {
+    "image_bed_front": (32, 120, 318, 424),   # energy 63%, px/out 1.76, d' 2.2
+    "image_bed_back": (180, 92, 280, 374),    # energy 52%, px/out 1.36, d' 0.5
+}
 ROIS: Dict[str, Dict[str, Tuple[int, int, int, int]]] = {
-    "wide": ROI_WIDE, "mid": ROI_MID, "hand": ROI_HAND, "full": {},
+    "wide": ROI_WIDE, "mid": ROI_MID, "hand": ROI_HAND,
+    "custom": ROI_CUSTOM, "custom43": ROI_CUSTOM_43, "full": {},
 }
 #: The default. ``MID`` would avoid resampling, but until one of these is shown
 #: to train better the wider field of view is the safer place to start: context
