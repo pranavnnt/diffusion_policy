@@ -57,6 +57,32 @@ NOISE_SEED = 909
 
 STAGES = ("dyn", "B0", "B1", "D2")
 
+#: Epoch budgets. ``B0``/``B1`` are deliberately light and ``D2`` heavy: the
+#: first two are the baseline machinery, the third is the thing under study, and
+#: every stage is selected from a grid so a generous budget costs wall-clock
+#: rather than accuracy.
+#:
+#: Epochs are **not** comparable across dataset sizes — at batch 64 the 0910
+#: recording gives 8 optimizer steps per epoch and 0909 gives 14, so the same
+#: number means very different amounts of training. The run logs steps/epoch
+#: for that reason. A B0 that is "still improving at epoch 60" on 521 chunks has
+#: had 480 steps, which is not much.
+#:
+#: The cost of a light ``B0``: an underfit backbone leaves more for the fast
+#: level, which inflates the measured residual demand and makes ``B1`` look
+#: better than it is. It does **not** invalidate ``D2 - B1`` — both nest on the
+#: same frozen ``B0`` — but the absolute numbers sit on a weak stack.
+#: The fast level's authority as a fraction of full command, and the ceiling
+#: the measurement may not exceed.  See the note where it is applied.
+FAST_FRAC_DEFAULT = 0.15
+FAST_FRAC_CAP = 0.30
+
+BUDGETS: Dict[str, Dict[str, int]] = {
+    "fast":     {"dyn": 40, "B0": 30, "B1": 20, "D2": 60},
+    "standard": {"dyn": 60, "B0": 60, "B1": 30, "D2": 200},
+    "long":     {"dyn": 100, "B0": 100, "B1": 50, "D2": 400},
+}
+
 
 def _tee(out_dir: str, also: Callable[[str], None] = print
          ) -> Callable[[str], None]:
@@ -119,7 +145,8 @@ def _ctx(model: PL.DrimPolicy, b: Dict[str, torch.Tensor]) -> torch.Tensor:
 
 
 def train_dynamics(spec: DrimSpec, tr, va, seed: int, epochs: int, device: str,
-                   log: Callable[[str], None], mods) -> Dict[str, Any]:
+                   log: Callable[[str], None], mods,
+                   estimator: str = SEL.DEFAULT_ESTIMATOR) -> Dict[str, Any]:
     """Fit the delta dynamics whose residual becomes the message.
 
     Reported against the **no-change baseline**, always.  dap ran a whole round
@@ -166,12 +193,34 @@ def train_dynamics(spec: DrimSpec, tr, va, seed: int, epochs: int, device: str,
                              exo_dim=spec.exo_dim).to(device)
     opt = torch.optim.AdamW(model.parameters(), lr=LR_DYN,
                             weight_decay=WEIGHT_DECAY)
+    #: The stage that used to be exempt.  Its last weights are what feed D2's
+    #: message, so a budget that was slightly wrong made the message worse and
+    #: nothing caught it — held-out skill ran +68.5 % at 30 epochs and +40.1 %
+    #: at 200.  It now snapshots on the same grid and is selected the same way,
+    #: which removes the sensitivity rather than asking the budget to be right.
+    bank = SEL.SnapshotBank(epochs)
     ty = torch.as_tensor(norm.y(ytr), device=device)
     ta = torch.as_tensor(atr, dtype=torch.float32, device=device)
     tdt = torch.as_tensor(dttr, dtype=torch.float32, device=device)
     txo = torch.as_tensor(xotr, dtype=torch.float32, device=device)
     td = torch.as_tensor(norm.d(dtr), device=device)
     rng = np.random.default_rng(seed + 3000)
+    vy = torch.as_tensor(norm.y(yva), device=device)
+    va_ = torch.as_tensor(ava, dtype=torch.float32, device=device)
+    vdt = torch.as_tensor(dtva, dtype=torch.float32, device=device)
+    vxo = torch.as_tensor(xova, dtype=torch.float32, device=device)
+    dva = DY.state_delta(yva, ynva, mods)
+    vd = torch.as_tensor(norm.d(dva), device=device)
+    base_va = DY.no_change_baseline(norm.d(dva))
+
+    @torch.no_grad()
+    def _val() -> float:
+        model.eval()
+        mu, _ = model(vy, va_, vdt, vxo if spec.exo_dim else None)
+        v = float(((vd - mu) ** 2).mean().item())
+        model.train()
+        return v
+
     t0 = time.time()
     for ep in range(epochs):
         tot = 0.0
@@ -185,12 +234,21 @@ def train_dynamics(spec: DrimSpec, tr, va, seed: int, epochs: int, device: str,
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             opt.step()
             tot += loss.detach().item() * len(sel)
-        if (ep + 1) % max(epochs // 5, 1) == 0:
-            log(f"      dyn epoch {ep + 1}/{epochs} nll={tot / len(ty):.5f}")
+        #: selected on held-out delta MSE, which is what ``skill`` is computed
+        #: from — the quantity the message's usefulness actually depends on,
+        #: not the NLL, which can be driven down by shrinking sigma while the
+        #: point predictions get worse.
+        vm = _val() if (ep + 1) in bank.grid else None
+        if bank.observe(model, ep + 1, action_mse=vm, val_loss=vm,
+                        train_loss=tot / len(ty)):
+            log(f"      dyn epoch {ep + 1}/{epochs} nll={tot / len(ty):.5f} "
+                f"val_mse={vm:.5f} (skill {(base_va - vm) / base_va:+.1%}) [snapshot]")
 
+    sel_eps = SEL.select_epochs(sorted(bank.states), estimator, curve=bank.curve)
+    model.load_state_dict(SEL.average_states(bank, sel_eps))
+    log(f"      dyn selected epoch(s) {sel_eps} by {estimator}")
     model.eval()
     frozen = DY.FrozenDynamics(model, norm).to(device)
-    dva = DY.state_delta(yva, ynva, mods)
     with torch.no_grad():
         t_ava = torch.as_tensor(ava, dtype=torch.float32, device=device)
         t_dtva = torch.as_tensor(dtva, dtype=torch.float32, device=device)
@@ -208,7 +266,8 @@ def train_dynamics(spec: DrimSpec, tr, va, seed: int, epochs: int, device: str,
         f"skill={skill:+.1%}"
         + ("" if skill > 0 else "   <-- WORSE THAN DOING NOTHING"))
     return {"dynamics": frozen, "mods": mods, "norm": norm,
-            "use_dt": bool(model.use_dt),
+            "use_dt": bool(model.use_dt), "curve": bank.curve,
+            "selected_epochs": sel_eps,
             "delta_dim": DY.delta_dim(mods),
             "mse": mse, "no_change_baseline": base_va, "skill": skill,
             "train_no_change_baseline": baseline,
@@ -626,6 +685,7 @@ def run(zarr_path: Any, out_dir: str, seed: int = 0,
     for child, parent in (("B1", "B0"), ("D2", "B1"), ("D2", "dyn")):
         assert not (child in stages and parent not in stages), (
             f"stage {child} nests on {parent}, which is not in {list(stages)}")
+    #: (superseded by BUDGETS below; kept as the floor when nothing is passed)
     #: ``dyn`` is short on purpose.  Swept on the 0909 recordings, held-out
     #: skill against the no-change baseline runs +67.5 / +68.5 / +65.3 / +57.6 /
     #: +40.1 % at 10 / 30 / 60 / 100 / 200 epochs — monotonically worse past ~30.
@@ -633,7 +693,7 @@ def run(zarr_path: Any, out_dir: str, seed: int = 0,
     #: budget is not merely wasted, it is spent: the last weights are the ones
     #: that feed D2's message, and dap lost a round to a dynamics that was worse
     #: than doing nothing.
-    epochs = {"dyn": 30, "B0": 60, "B1": 40, "D2": 40, **(epochs or {})}
+    epochs = {**BUDGETS["standard"], **(epochs or {})}
     os.makedirs(out_dir, exist_ok=True)
     if log is print:
         log = _tee(out_dir)
@@ -661,6 +721,8 @@ def run(zarr_path: Any, out_dir: str, seed: int = 0,
         f"act_dim={spec.act_dim}")
     log(f"[data] {len(tr['target'])} train chunks / {len(va['target'])} valid; "
         f"{int(tr['msg_valid'].sum())} with a full message window")
+    log(f"[data] {max(len(tr['target']) // BATCH, 1)} optimizer steps per epoch "
+        f"at batch {BATCH}; budgets " + ", ".join(f"{k}={v}" for k, v in epochs.items()))
     if act["dead"]:
         log(f"[data] action channels never nonzero: {act['dead']} "
             f"(active: {act['active']})")
@@ -735,7 +797,8 @@ def run(zarr_path: Any, out_dir: str, seed: int = 0,
         log(f"[stage] dyn  (state = {spec.dyn_dim}d: prop {spec.prop_dim} + "
             f"contact {spec.wrench_dim})")
         mods = F.modalities(res, spec.dyn_fields)
-        dyn = train_dynamics(spec, tr, va, seed, epochs["dyn"], device, log, mods)
+        dyn = train_dynamics(spec, tr, va, seed, epochs["dyn"], device, log,
+                             mods, estimator=estimator)
         frozen = dyn.pop("dynamics")
         summary["dyn"] = {k: v for k, v in dyn.items() if k not in ("mods", "norm")}
         tr = attach_su(tr, frozen, device)
@@ -788,7 +851,20 @@ def run(zarr_path: Any, out_dir: str, seed: int = 0,
         #: leaves rather than from a proxy computed before any model was trained.
         md = measured_residual_demand(models["B0"], t_tr, spec, device)
         raw = max(md["p95"][i] for i in act["active"])
-        frac = float(min(max(raw, 0.02), 0.5))
+        #: The ceiling is *declared*, not measured. What B0 leaves behind says
+        #: how much the corrector would like; what it may have is a safety
+        #: question about a robot working next to a person, and the measurement
+        #: cannot answer it. 0.15 of full command is ~5.2 mm of pose delta on
+        #: the x axis, about 30 % of the operator's own median nudge (17.8 mm)
+        #: and under 1 mm of extra end-effector motion per replan interval --
+        #: a correction rather than a second policy. dap's two tasks bracket
+        #: it: cap declared 0.023 in these units and drawer 0.23.
+        frac = float(min(max(raw, 0.02), FAST_FRAC_CAP))
+        if raw > FAST_FRAC_CAP:
+            log(f"[authority] measured demand {raw:.3f} exceeds the declared "
+                f"cap {FAST_FRAC_CAP:.2f}; B0 is leaving the fast level more "
+                f"than a reflex should have. Read it as B0 underfit, not as a "
+                f"reason to raise the cap.")
         if raw >= 0.5:
             #: The demand is measured against B0's own samples, so an
             #: undertrained B0 inflates it without limit — a --quick run hits
@@ -906,6 +982,12 @@ def main(argv=None) -> int:
     ap.add_argument("--out", default=None,
                     help="run directory; defaults to "
                          "data/outputs/drim_<timestamp>")
+    ap.add_argument("--budget", default="standard", choices=sorted(BUDGETS),
+                    help="epoch budget preset. B0/B1 are light and D2 heavy on "
+                         "purpose: the first two are the baseline machinery, "
+                         "the third is what is being studied, and every stage "
+                         "is selected from a grid so a generous budget costs "
+                         "time rather than accuracy.")
     ap.add_argument("--quick", action="store_true",
                     help="short budgets for a plumbing check, not a result")
     ap.add_argument("--seed", type=int, default=0)
@@ -954,10 +1036,10 @@ def main(argv=None) -> int:
     ap.add_argument("--require", default="",
                     help="comma-separated fields that must resolve, e.g. "
                          "'wrench' to refuse a dataset without a contact signal")
-    ap.add_argument("--epochs-dyn", type=int, default=30)
-    ap.add_argument("--epochs-b0", type=int, default=60)
-    ap.add_argument("--epochs-b1", type=int, default=40)
-    ap.add_argument("--epochs-d2", type=int, default=40)
+    ap.add_argument("--epochs-dyn", type=int, default=None)
+    ap.add_argument("--epochs-b0", type=int, default=None)
+    ap.add_argument("--epochs-b1", type=int, default=None)
+    ap.add_argument("--epochs-d2", type=int, default=None)
     ap.add_argument("--no-diagnose", action="store_true",
                     help="skip the pre-deployment diagnostics (trajectory "
                          "divergence through the dynamics, surprise shift, "
@@ -977,11 +1059,14 @@ def main(argv=None) -> int:
     ap.add_argument("--no-keep-grid", action="store_true",
                     help="do not store the epoch grid in the checkpoint; saves "
                          "disk, but the selection can no longer be re-derived")
-    ap.add_argument("--fast-frac", default="auto",
+    ap.add_argument("--fast-frac", default=str(FAST_FRAC_DEFAULT),
                     help="the fast level's authority as a fraction of full "
                          "command (LIN_SCALE 0.02 m/s, ANG_SCALE 0.05 rad/s). "
-                         "'auto' (default) derives it from the correction the "
-                         "demonstrations require; pass a number to override. "
+                         f"{FAST_FRAC_DEFAULT} by default -- a declared reflex "
+                         "authority, ~5 mm of pose delta, about 30%% of the "
+                         "operator's median nudge. 'auto' measures it from a "
+                         "trained B0 instead, capped at "
+                         f"{FAST_FRAC_CAP}. "
                          "Channels the data never moves get 0. dap's own arms "
                          "sit at 0.016 (cap) and 0.16 (drawer).")
     a = ap.parse_args(argv)
@@ -1000,8 +1085,11 @@ def main(argv=None) -> int:
         prof["layout"] = LAYOUTS[a.layout]
     out = a.out or os.path.join(
         "data", "outputs", "drim_" + time.strftime("%Y%m%d_%H%M%S"))
-    ep = {"dyn": a.epochs_dyn, "B0": a.epochs_b0,
-          "B1": a.epochs_b1, "D2": a.epochs_d2}
+    ep = dict(BUDGETS[a.budget])
+    for k, v in (("dyn", a.epochs_dyn), ("B0", a.epochs_b0),
+                 ("B1", a.epochs_b1), ("D2", a.epochs_d2)):
+        if v is not None:
+            ep[k] = v
     if a.quick:
         #: Enough to exercise every stage and the exact-null check; far too few
         #: to mean anything, which is the point of a separate flag rather than a
