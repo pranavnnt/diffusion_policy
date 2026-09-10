@@ -91,7 +91,8 @@ ARM_FIELDS: Tuple[Field, ...] = (
           "joint-space contact, including drag on the forearm that a 6-D "
           "end-effector wrench cannot represent"),
     Field("wrench", 6, "linear", "wrench",
-          ("wrench_ee_base", "wrench_base", "wrench_ee_ee", "wrench_ee"),
+          ("ee_wrench", "wrench_ee_base", "wrench_base", "wrench_ee_ee",
+           "wrench_ee"),
           "the fast corrector's contact signal, and the physical content of "
           "D2's surprise channel; without it S is a kinematic tracking error",
           conflicts=("ee_force",)),

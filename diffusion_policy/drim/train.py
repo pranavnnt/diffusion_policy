@@ -325,7 +325,10 @@ def train_b0(spec, tr, va, seed, epochs, device, log) -> Dict[str, Any]:
             tot += loss.detach().item() * len(sel)
         sched.step()
         vl = _valid_flow(model, va, device)
-        am = _valid_action_mse(model, va, device)
+        #: ``action_mse`` samples a chunk per draw per batch, which with vision
+        #: costs more than the epoch that produced it.  Selection only ever
+        #: reads it at grid points, so that is where it is paid for.
+        am = (action_mse(model, va, device) if (ep + 1) in bank.grid else None)
         if bank.observe(model, ep + 1, val_loss=vl, action_mse=am,
                         train_loss=tot / n):
             log(f"      s{seed}/B0 epoch {ep + 1}/{epochs} train={tot / n:.5f} "
@@ -465,7 +468,7 @@ def train_b1(b0, spec, tr, va, seed, epochs, device, log) -> Dict[str, Any]:
         vl, sat = _valid_fast(model, va, nom_va, device)
         #: ``vl`` is B1's own objective (cached nominals, no message); the
         #: comparable number is ``am``, computed exactly as B0's and D2's are.
-        am = action_mse(model, va, device)
+        am = (action_mse(model, va, device) if (ep + 1) in bank.grid else None)
         if bank.observe(model, ep + 1, val_loss=vl, action_mse=am,
                         train_loss=tot / n, saturation=sat):
             log(f"      s{seed}/B1 epoch {ep + 1}/{epochs} train={tot / n:.5f} "
@@ -543,7 +546,8 @@ def train_d2(b1, spec, tr, va, seed, epochs, device, message_in_dims, log
             tot += loss.detach().item() * len(sel)
         sched.step()
         vl = _valid_cond(model, va, noise_va, device)
-        am = _valid_action_mse(model, va, device, message_of=_message)
+        am = (action_mse(model, va, device, message_of=_message)
+              if (ep + 1) in bank.grid else None)
         gn = model.gate_norms()
         if bank.observe(model, ep + 1, val_loss=vl, action_mse=am,
                         train_loss=tot / n, **gn):
@@ -772,7 +776,16 @@ def run(zarr_path: Any, out_dir: str, seed: int = 0,
         #: Now that B0 exists, the ceiling comes from the residual it actually
         #: leaves rather than from a proxy computed before any model was trained.
         md = measured_residual_demand(models["B0"], t_tr, spec, device)
-        frac = float(min(max(max(md["p95"][i] for i in act["active"]), 0.02), 0.5))
+        raw = max(md["p95"][i] for i in act["active"])
+        frac = float(min(max(raw, 0.02), 0.5))
+        if raw >= 0.5:
+            #: The demand is measured against B0's own samples, so an
+            #: undertrained B0 inflates it without limit — a --quick run hits
+            #: this every time.  Read it as "B0 has not converged", not as "the
+            #: corrector needs half the command range".
+            log(f"[authority] WARNING measured demand {raw:.3f} hit the 0.5 "
+                f"clamp; B0 is probably undertrained, so this ceiling says more "
+                f"about B0 than about the task")
         summary["measured_residual_demand"] = md
         log(f"[authority] measured from B0: p95 {md['p95']}  p99 {md['p99']}")
         log(f"[authority] ceiling {fast_frac:.4f} (proxy) -> {frac:.4f} (measured)")
