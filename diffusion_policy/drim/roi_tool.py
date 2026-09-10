@@ -24,7 +24,8 @@ Controls
 ``drag``            draw a box
 ``arrows``          nudge the box (with ``shift``: resize)
 ``[`` / ``]``       scrub frames        ``,`` / ``.``  previous / next episode
-``h``               heat-map overlay    ``p``  preview what the encoder sees
+``h``               heat-map overlay (off by default)
+``p``               preview what the encoder sees
 ``c``               switch camera       ``r``  clear the box
 ``1`` ``2`` ``3``   load the wide / mid / hand preset
 ``s``               save to --out       ``q`` / ``esc``  quit
@@ -37,6 +38,10 @@ import json
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
+
+#: cv2 reports arrow keys differently depending on the GUI backend.
+_LEFT, _RIGHT, _UP, _DOWN = (81, 2, 65361), (83, 3, 65363), (82, 0, 65362), (84, 1, 65364)
+_ARROWS = set(_LEFT + _RIGHT + _UP + _DOWN)
 
 #: Frames sampled for the statistics.  Enough for a stable brightness estimate
 #: per episode without holding the whole recording in memory.
@@ -94,17 +99,24 @@ def run(zarr_path: str, cameras: List[str], out_path: str,
     cam = cameras[ci]
     H, W = data[cam]["energy"].shape
     frame_i, ep_i = 0, 0
-    show_heat, show_prev = True, True
+    show_heat, show_prev = False, True
     boxes: Dict[str, Tuple[int, int, int, int]] = {}
     drag: Dict[str, Any] = {"on": False, "p0": None, "p1": None}
     WIN = "roi  (drag=draw  arrows=nudge  hpc123 rs q)"
 
     def cur_box() -> Optional[Tuple[int, int, int, int]]:
+        """The box being drawn, else the stored one.
+
+        Never returns a degenerate box: a click without a drag has ``p0 == p1``,
+        which is a zero-size crop, and ``cv2.resize`` raises on an empty image
+        rather than returning one.
+        """
         if drag["p0"] and drag["p1"]:
             (ax, ay), (bx, by) = drag["p0"], drag["p1"]
             y0, y1 = sorted((max(0, min(ay, H - 1)), max(0, min(by, H - 1))))
             x0, x1 = sorted((max(0, min(ax, W - 1)), max(0, min(bx, W - 1))))
-            return (y0, x0, y1 - y0, x1 - x0)
+            if y1 - y0 >= 2 and x1 - x0 >= 2:
+                return (y0, x0, y1 - y0, x1 - x0)
         return boxes.get(cam)
 
     def on_mouse(event, x, y, flags, _):
@@ -157,7 +169,7 @@ def run(zarr_path: str, cameras: List[str], out_path: str,
             cv2.putText(panel, s, (10, 22 + i * 26), cv2.FONT_HERSHEY_SIMPLEX,
                         0.55, (220, 220, 220), 1)
         stack = [view, panel]
-        if show_prev and box:
+        if show_prev and box and box[2] >= 2 and box[3] >= 2:
             y0, x0, h, w = box
             crop = cv2.resize(base[y0:y0 + h, x0:x0 + w],
                               (image_size[1], image_size[0]),
@@ -193,18 +205,19 @@ def run(zarr_path: str, cameras: List[str], out_path: str,
                 boxes[cam] = preset[cam]
         elif k == ord("s"):
             _save(boxes, out_path, data, image_size)
-        elif box is not None and k in range(65360, 65370) or k in (81, 82, 83, 84,
-                                                                   0, 1, 2, 3):
-            #: arrow keys differ between cv2 builds; accept both encodings
+        elif box is not None and k in _ARROWS:
+            #: arrow keys differ between cv2 builds, so both encodings are
+            #: accepted; the guard is on ``box`` because there is nothing to
+            #: nudge before one is drawn
             y0, x0, h, w = box
             step = 8
-            if k in (81, 2, 65361):
+            if k in _LEFT:
                 x0 -= step
-            elif k in (83, 3, 65363):
+            elif k in _RIGHT:
                 x0 += step
-            elif k in (82, 0, 65362):
+            elif k in _UP:
                 y0 -= step
-            elif k in (84, 1, 65364):
+            elif k in _DOWN:
                 y0 += step
             boxes[cam] = (max(0, min(y0, H - h)), max(0, min(x0, W - w)), h, w)
 

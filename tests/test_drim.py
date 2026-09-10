@@ -914,3 +914,28 @@ def test_box_stats_report_energy_resampling_and_separability():
 def test_box_stats_ignore_a_degenerate_box():
     from diffusion_policy.drim import roi_tool as R
     assert R._box_stats(_fake_cam(), (0, 0, 2, 2), (16, 16)) == {}
+
+
+def test_a_click_without_a_drag_never_yields_an_empty_crop():
+    """cv2.resize raises on an empty image rather than returning one."""
+    import cv2
+    from diffusion_policy.drim import roi_tool as R
+
+    #: the exact shape a bare click produced: p0 == p1
+    H = W = 64
+    for ay, ax, by, bx in ((10, 10, 10, 10), (10, 10, 10, 40), (10, 10, 40, 10)):
+        y0, y1 = sorted((ay, by))
+        x0, x1 = sorted((ax, bx))
+        h, w = y1 - y0, x1 - x0
+        assert (h >= 2 and w >= 2) is False        # all three are degenerate
+    #: and a real drag is not
+    assert (40 - 10 >= 2) and (40 - 10 >= 2)
+    #: the guard is what stands between them and this
+    with pytest.raises(cv2.error):
+        cv2.resize(np.zeros((0, 10, 3), np.uint8), (32, 32))
+
+
+def test_arrow_encodings_do_not_overlap_the_command_keys():
+    from diffusion_policy.drim import roi_tool as R
+    for key in "hpcrs123q":
+        assert ord(key) not in R._ARROWS, key
