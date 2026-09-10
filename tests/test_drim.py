@@ -769,3 +769,40 @@ def test_unreachable_targets_are_flagged():
     over = from_resolution(res, act_width=6, n_declared=1,
                            act_range=[0.08, 0.01, 0.01, 0.02, 0.02, 0.02], **kw)
     assert over.act_scale is None
+
+
+# --------------------------------------------------------------------------- #
+# 12. field of view
+# --------------------------------------------------------------------------- #
+
+
+def test_roi_is_applied_before_the_resize():
+    """Resizing the whole frame then centre-cropping spends output on stillness."""
+    from diffusion_policy.drim.dataset import DrimEpisodes
+    e = DrimEpisodes.__new__(DrimEpisodes)
+    e.image_size = (24, 32)
+    e.roi = {"cam": (10, 20, 48, 64)}
+    raw = np.zeros((3, 480, 640, 3), np.uint8)
+    raw[:, 10:58, 20:84] = 200           # only the ROI has content
+    out = e._frames(raw, "cam")
+    assert out.shape == (3, 24, 32, 3)
+    assert out.min() > 150               # the ROI filled the frame
+    #: without a declared ROI the whole frame is kept
+    e.roi = {}
+    assert e._frames(raw, "cam").mean() < 50
+
+
+def test_roi_boxes_stay_inside_the_native_frame():
+    from diffusion_policy.drim import dressing as D
+    for cam, (y0, x0, h, w) in D.ROI.items():
+        assert 0 <= y0 and y0 + h <= 480, cam
+        assert 0 <= x0 and x0 + w <= 640, cam
+
+
+def test_ee_slice_is_found_in_the_dynamics_modality_table():
+    from diffusion_policy.drim.diagnose import _ee_slice
+    res = FL.resolve(_packed_source(arm2_live=False), n_arms=2,
+                     layout=FL.SMOKE_LAYOUT, warn=False)
+    mods = FL.modalities(res, res.prop_names())
+    assert _ee_slice(mods) == (7, 10)
+    assert _ee_slice([("arm1_q", (0, 7), 7, "linear")]) is None

@@ -89,6 +89,10 @@ def rollout(model, dyn: DY.FrozenDynamics, mods, eps, norm, spec: DrimSpec,
     chans = list(spec.act_channels) or list(range(spec.act_dim))
     div = np.zeros((len(starts), n_steps), np.float64)
     adiv = np.zeros((len(starts), n_steps), np.float64)
+    #: The same drift in metres.  A normalised norm says whether one policy is
+    #: worse than another; millimetres say whether anyone should care.
+    ee = _ee_slice(mods)
+    eediv = np.zeros((len(starts), n_steps), np.float64)
     s_rolled: List[np.ndarray] = []
 
     for i, (j, s0) in enumerate(starts):
@@ -145,11 +149,24 @@ def rollout(model, dyn: DY.FrozenDynamics, mods, eps, norm, spec: DrimSpec,
             adiv[i, k] = float((a_norm - torch.as_tensor(
                 norm.apply_vec("target", ep["action"][t:t + 1][:, chans]),
                 device=device)).norm(dim=-1).item())
+            if ee is not None:
+                eediv[i, k] = float(
+                    (y_next[:, ee[0]:ee[1]] - truth[:, ee[0]:ee[1]]
+                     ).norm(dim=-1).item())
             s_rolled.append(y_next.cpu().numpy())
             y = y_next
     model.train()
     return {"state_divergence": div, "action_divergence": adiv,
+            "ee_divergence_m": eediv,
             "rolled_states": np.concatenate(s_rolled) if s_rolled else np.zeros((0, 1))}
+
+
+def _ee_slice(mods) -> Optional[Tuple[int, int]]:
+    """Where the first arm's end-effector position sits in the dynamics state."""
+    for name, (lo, hi), _, _ in mods:
+        if name.endswith("_ee_pos"):
+            return (lo, hi)
+    return None
 
 
 def divergence(model, dyn, mods, eps, norm, spec, episodes, device="cpu",
@@ -181,6 +198,9 @@ def divergence(model, dyn, mods, eps, norm, spec, episodes, device="cpu",
             "replay_median": float(np.median(r)),
             "gap_median": float(np.median(p) - np.median(r)),
             "policy_p90": float(np.percentile(p, 90)),
+            "policy_ee_mm": float(np.median(pol["ee_divergence_m"][:, m - 1]) * 1e3),
+            "replay_ee_mm": float(np.median(rep["ee_divergence_m"][:, m - 1]) * 1e3),
+            "seconds": round(m * float(getattr(eps, "dt_stats", {}).get("mean", 0.0)), 2),
         }
     d1 = np.median(pol["state_divergence"][:, 0])
     dn = np.median(pol["state_divergence"][:, -1])
@@ -256,6 +276,111 @@ def message_reliance(model, batch, message_of) -> Dict[str, Any]:
                     "at equal budget on a real rollout"}
 
 
+# --------------------------------------------------------------------------- #
+# standalone entry point: diagnose a run that has already been trained
+# --------------------------------------------------------------------------- #
+
+
+def diagnose_run(run_dir: str, data: Any, device: str = "cpu",
+                 n_steps: int = 32, n_starts: int = 48, seed: int = 0,
+                 log: Callable[[str], None] = print) -> Dict[str, Any]:
+    """Run the checks against checkpoints already on disk.
+
+    The same diagnostics the training loop ends with, decoupled from it. Two
+    reasons that matters: a run trained before these existed can still be
+    checked, and a checkpoint about to be driven on hardware can be re-checked
+    without retraining the thing you are about to trust.
+    """
+    import json
+    import os
+
+    import torch
+
+    from diffusion_policy.drim import dressing as DRESS
+    from diffusion_policy.drim import policy as PL
+    from diffusion_policy.drim import selection as SEL
+    from diffusion_policy.drim.dataset import load_split
+    from diffusion_policy.drim.spec import DrimSpec
+
+    with open(os.path.join(run_dir, f"summary_seed{seed}.json")) as fh:
+        summary = json.load(fh)
+    saved = DrimSpec.from_dict(summary["spec"])
+    prof = DRESS.profile(cameras=saved.cameras)
+    tr, va, norm, eps, spec = load_split(
+        data, cameras=saved.cameras, n_arms=max(saved.n_arms, 1),
+        layout=prof["layout"], seed=seed, image_size=prof["image_size"],
+        roi=prof.get("roi"), exo_key=prof["exo_key"],
+        act_scale_per_arm=prof["act_scale_per_arm"],
+        act_per_arm=prof["act_per_arm"], warn_scale=False,
+        spec_kw=dict(action_mode=saved.action_mode,
+                     pred_horizon=saved.pred_horizon,
+                     exec_horizon=saved.exec_horizon,
+                     message_window=saved.message_window))
+    spec.assert_schema(saved)
+
+    dyn_ck = torch.load(os.path.join(run_dir, f"dynamics_seed{seed}.pt"),
+                        map_location=device, weights_only=False)
+    mods = [(n, tuple(sl), w, k) for n, sl, w, k in dyn_ck["mods"]]
+    m = DY.DeltaDynamics(mods, saved.act_dim, exo_dim=saved.exo_dim)
+    m.load_state_dict(dyn_ck["state_dict"])
+    m.eval()
+    frozen = DY.FrozenDynamics(m, DY.Normaliser.from_state(dyn_ck["norm"])).to(device)
+
+    model, parent = None, None
+    for stage in ("B0", "B1", "D2"):
+        path = os.path.join(run_dir, f"{stage}_seed{seed}.pt")
+        if not os.path.exists(path):
+            break
+        kw = ({} if stage != "D2"
+              else {"message_in_dims": (DY.delta_dim(mods), DY.delta_dim(mods))})
+        model = PL.build(stage, saved, core=parent, **kw).to(device)
+        SEL.load_selected(path, model, map_location=device)
+        parent, loaded = model, stage
+    log(f"[diagnose] {run_dir}: loaded up to {loaded}")
+
+    va_eps = sorted({int(i) for i in va["episode_index"]})
+    diag = {"divergence": divergence(model, frozen, mods, eps, norm, spec,
+                                     va_eps, device=device, n_steps=n_steps,
+                                     n_starts=n_starts, seed=seed)}
+    roll = rollout(model, frozen, mods, eps, norm, spec, va_eps, n_steps,
+                   n_starts, device, seed)
+    diag["surprise_shift"] = surprise_shift(frozen, mods, eps, norm, spec,
+                                            roll.get("rolled_states"), va_eps,
+                                            device=device)
+    summary["diagnostics"] = diag
+    for k, v in (diag["divergence"].get("at") or {}).items():
+        log(f"      {k:8s} ({v['seconds']:4.1f}s)  policy {v['policy_ee_mm']:7.2f} mm"
+            f"   replay {v['replay_ee_mm']:7.2f} mm"
+            f"   gap {v['policy_ee_mm'] - v['replay_ee_mm']:+7.2f} mm")
+    sh = diag["surprise_shift"]
+    if "p99_ratio" in sh:
+        log(f"      surprise p99 x{sh['p99_ratio']:.2f}, clip rate "
+            f"x{sh['clip_rate_ratio']:.1f}  (demonstration -> rolled)")
+    for v in detectors(summary):
+        log(f"      {v}")
+    out = os.path.join(run_dir, f"diagnostics_seed{seed}.json")
+    with open(out, "w") as fh:
+        json.dump(diag, fh, indent=2, default=str)
+    log(f"[diagnose] wrote {out}")
+    return diag
+
+
+def main(argv=None) -> int:
+    import argparse
+
+    ap = argparse.ArgumentParser(description=diagnose_run.__doc__.splitlines()[0])
+    ap.add_argument("--run", required=True, help="a training output directory")
+    ap.add_argument("--data", required=True)
+    ap.add_argument("--device", default="cpu")
+    ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--steps", type=int, default=32)
+    ap.add_argument("--starts", type=int, default=48)
+    a = ap.parse_args(argv)
+    diagnose_run(a.run, a.data, device=a.device, seed=a.seed,
+                 n_steps=a.steps, n_starts=a.starts)
+    return 0
+
+
 def detectors(summary: Dict[str, Any]) -> List[str]:
     """The one-line verdicts worth reading before anything reaches the robot."""
     out: List[str] = []
@@ -306,3 +431,7 @@ def detectors(summary: Dict[str, Any]) -> List[str]:
         out.append(f"{'OK  ' if c < 10 else 'WARN'} state divergence grows x{c:.1f} "
                    f"over {dv['n_steps']} steps")
     return out
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

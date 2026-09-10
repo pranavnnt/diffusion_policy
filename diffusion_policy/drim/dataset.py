@@ -154,10 +154,12 @@ class DrimEpisodes:
                  action_key: str = "action", time_key: str = "timestamp",
                  require: Sequence[str] = (), warn: bool = True,
                  image_size: Optional[Tuple[int, int]] = None,
-                 exo_key: Optional[str] = None):
+                 exo_key: Optional[str] = None,
+                 roi: Optional[Dict[str, Tuple[int, int, int, int]]] = None):
         self.zarr_paths = discover_zarrs(zarr_path)
         self.cameras = tuple(cameras)
         self.image_size = image_size
+        self.roi = dict(roi or {})
         self.n_declared = int(n_arms)
         self.action_key = action_key
         self.exo_key = exo_key
@@ -259,11 +261,11 @@ class DrimEpisodes:
             else:
                 ep["dt"] = np.ones((b - a, 1), np.float32)
             for cam in self.cameras:
-                ep[cam] = self._frames(rb[cam][a:b])
+                ep[cam] = self._frames(rb[cam][a:b], cam)
             self.episodes.append(ep)
             self.episode_source.append(src_i)
 
-    def _frames(self, raw) -> np.ndarray:
+    def _frames(self, raw, cam: str = "") -> np.ndarray:
         """Camera frames at the size the policy declares, resized on load.
 
         Not only a memory measure, though it is that too: the vision encoder
@@ -273,6 +275,12 @@ class DrimEpisodes:
         crop was sized for.  ``image_size=None`` keeps the native resolution.
         """
         a = np.asarray(raw)
+        #: Field-of-view selection first: the action is off-centre in these
+        #: views, so resizing the whole frame and then centre-cropping spends
+        #: most of the output on parts that never move.
+        if cam in self.roi:
+            y0, x0, h, w = self.roi[cam]
+            a = a[:, y0:y0 + h, x0:x0 + w]
         if self.image_size is None or a.shape[1:3] == tuple(self.image_size):
             return a
         import cv2
@@ -561,6 +569,7 @@ def load_split(zarr_path: str, cameras: Sequence[str] = (), n_arms: int = 2,
                spec_kw: Optional[Dict[str, Any]] = None, warn_scale: bool = True,
                image_size: Optional[Tuple[int, int]] = None,
                exo_key: Optional[str] = None,
+               roi: Optional[Dict[str, Tuple[int, int, int, int]]] = None,
                act_scale_per_arm: Optional[Sequence[float]] = None,
                act_per_arm: Optional[int] = None, **kw
                ) -> Tuple[Dict[str, np.ndarray], Dict[str, np.ndarray],
@@ -568,7 +577,7 @@ def load_split(zarr_path: str, cameras: Sequence[str] = (), n_arms: int = 2,
     """Resolve the dataset, derive the spec from it, and cut it into chunks."""
     eps = DrimEpisodes(zarr_path, cameras=cameras, n_arms=n_arms, layout=layout,
                        require=require, image_size=image_size,
-                       exo_key=exo_key, **kw)
+                       exo_key=exo_key, roi=roi, **kw)
     spec_kw = dict(spec_kw or {})
     native = eps.native_image_size()
     if native is not None:

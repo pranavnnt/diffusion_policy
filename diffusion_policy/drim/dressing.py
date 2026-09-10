@@ -80,6 +80,24 @@ HORIZONS: Dict[str, Any] = dict(pred_horizon=16, exec_horizon=8,
 #: augmentation; and two cameras at full resolution is 16.6 GB before chunking.
 IMAGE_SIZE: Tuple[int, int] = (240, 320)
 
+#: Where the task actually happens in each frame, as ``(y0, x0, h, w)`` in the
+#: native 480x640, applied **before** the resize.
+#:
+#: Measured from per-pixel temporal motion energy over ``zigzag_bed_0910``
+#: (2026-09-10).  The action is off-centre in both views — the energy centroid
+#: is at (179, 434) for the front camera and (256, 185) for the back, against a
+#: frame centre of (240, 320) — so a *centred* crop is the wrong shape here. A
+#: 70 % box placed on the action captures 88.5 % / 85.2 % of the motion energy,
+#: which matches or beats a 90 % centred crop (87.7 % / 86.3 %) while spending
+#: ~1.6x more of the output pixels on the cloth.
+#:
+#: This is field-of-view selection and is fixed. The encoder's ``crop_shape``
+#: random crop still runs inside it, as augmentation.
+ROI: Dict[str, Tuple[int, int, int, int]] = {
+    "image_bed_front": (16, 192, 336, 448),
+    "image_bed_back": (128, 0, 336, 448),
+}
+
 CAMERAS_0909: Tuple[str, ...] = ("image_bed_front", "image_bed_back")
 CAMERAS_SMOKE: Tuple[str, ...] = ("image_arm1", "image_bed_front")
 
@@ -96,6 +114,7 @@ def profile(cameras: Optional[Sequence[str]] = None) -> Dict[str, Any]:
         "layout": PACKED_STATE,
         "cameras": tuple(CAMERAS_0909 if cameras is None else cameras),
         "image_size": IMAGE_SIZE,
+        "roi": ROI,
         "action_mode": "delta_ee_pos",
         "exo_key": "zigzag_action",
         "act_scale_per_arm": ARM_ACT_SCALE,
