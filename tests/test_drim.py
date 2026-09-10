@@ -792,11 +792,32 @@ def test_roi_is_applied_before_the_resize():
     assert e._frames(raw, "cam").mean() < 50
 
 
-def test_roi_boxes_stay_inside_the_native_frame():
+def test_every_roi_candidate_stays_inside_the_native_frame():
     from diffusion_policy.drim import dressing as D
-    for cam, (y0, x0, h, w) in D.ROI.items():
-        assert 0 <= y0 and y0 + h <= 480, cam
-        assert 0 <= x0 and x0 + w <= 640, cam
+    for name, roi in D.ROIS.items():
+        for cam, (y0, x0, h, w) in roi.items():
+            assert 0 <= y0 and y0 + h <= 480, (name, cam)
+            assert 0 <= x0 and x0 + w <= 640, (name, cam)
+
+
+def test_the_mid_roi_needs_no_resampling():
+    """It is exactly the encoder's input size, so no interpolation happens."""
+    from diffusion_policy.drim import dressing as D
+    for cam, (_, _, h, w) in D.ROI_MID.items():
+        assert (h, w) == D.IMAGE_SIZE, cam
+
+
+def test_roi_candidates_are_ordered_by_how_much_they_keep():
+    from diffusion_policy.drim import dressing as D
+    area = lambda r: r["image_bed_front"][2] * r["image_bed_front"][3]
+    assert area(D.ROI_HAND) < area(D.ROI_MID) < area(D.ROI_WIDE)
+
+
+def test_profile_rejects_an_unknown_roi():
+    from diffusion_policy.drim import dressing as D
+    with pytest.raises(KeyError, match="unknown roi"):
+        D.profile(roi="nope")
+    assert D.profile(roi="full")["roi"] == {}
 
 
 def test_ee_slice_is_found_in_the_dynamics_modality_table():

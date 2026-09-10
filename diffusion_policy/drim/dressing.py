@@ -83,25 +83,59 @@ IMAGE_SIZE: Tuple[int, int] = (240, 320)
 #: Where the task actually happens in each frame, as ``(y0, x0, h, w)`` in the
 #: native 480x640, applied **before** the resize.
 #:
-#: Measured from per-pixel temporal motion energy over ``zigzag_bed_0910``
+#: Placed by per-pixel temporal motion energy over ``zigzag_bed_0910``
 #: (2026-09-10).  The action is off-centre in both views — the energy centroid
 #: is at (179, 434) for the front camera and (256, 185) for the back, against a
-#: frame centre of (240, 320) — so a *centred* crop is the wrong shape here. A
-#: 70 % box placed on the action captures 88.5 % / 85.2 % of the motion energy,
-#: which matches or beats a 90 % centred crop (87.7 % / 86.3 %) while spending
-#: ~1.6x more of the output pixels on the cloth.
+#: frame centre of (240, 320) — so a *centred* crop is the wrong shape here.
 #:
-#: This is field-of-view selection and is fixed. The encoder's ``crop_shape``
-#: random crop still runs inside it, as augmentation.
-ROI: Dict[str, Tuple[int, int, int, int]] = {
+#: Three candidates, because the trade is real and this data cannot settle it:
+#: a tighter box spends more of the output on the cloth and less on the arm and
+#: bed that give it context.
+#:
+#: =========  ==============  ===================  ==========================
+#: box        motion energy   native px / out px   
+#: =========  ==============  ===================  ==========================
+#: ``WIDE``   89 % / 86 %     1.96 (downsampled)   most context
+#: ``MID``    77 % / 72 %     **1.00 (no resample)**  240x320 exactly as recorded
+#: ``HAND``   41 % / 48 %     0.49 (upsampled)     cloth largest, context gone
+#: =========  ==============  ===================  ==========================
+#:
+#: ``MID`` is worth noticing: it is exactly the network's input size, so the
+#: frames reach the encoder with no interpolation at all.
+#:
+#: None of these is an illumination fix. Measured inside the boxes, the
+#: *between-episode* brightness spread on the front camera is 6.2 / 6.6 / 6.6
+#: against 6.7 for the full frame — unchanged. What falls is d', and only
+#: because a tighter box moves more (within-episode std 3.0 / 4.5 / 5.9), which
+#: masks the illumination cue rather than removing it. The hand is also the
+#: *brightest* part of the scene (187 against 161 overall): it sits by the
+#: window, so it is the region most exposed to a change in the daylight.
+ROI_WIDE: Dict[str, Tuple[int, int, int, int]] = {
     "image_bed_front": (16, 192, 336, 448),
     "image_bed_back": (128, 0, 336, 448),
 }
+ROI_MID: Dict[str, Tuple[int, int, int, int]] = {
+    "image_bed_front": (48, 320, 240, 320),
+    "image_bed_back": (152, 0, 240, 320),
+}
+ROI_HAND: Dict[str, Tuple[int, int, int, int]] = {
+    "image_bed_front": (40, 352, 168, 224),
+    "image_bed_back": (152, 56, 168, 224),
+}
+ROIS: Dict[str, Dict[str, Tuple[int, int, int, int]]] = {
+    "wide": ROI_WIDE, "mid": ROI_MID, "hand": ROI_HAND, "full": {},
+}
+#: The default. ``MID`` would avoid resampling, but until one of these is shown
+#: to train better the wider field of view is the safer place to start: context
+#: lost to a crop cannot be recovered, resolution can.
+ROI = ROI_WIDE
 
 #: The bed-front camera faces a window.  Between-episode brightness std is 6.7
 #: against 2.5 within one, and the colour shifts with it (R sits ~10 below G/B,
-#: by a margin that tracks the level).  Five episodes from one session already
-#: show that; different times of day would show much more, and with every
+#: by a margin that tracks the level).  Cropping does not fix this: measured
+#: inside every ROI candidate the between-episode spread is unchanged at ~6.2-6.6,
+#: and the hand is the *brightest* part of the scene because it sits by the
+#: window.  Five episodes from one session already show it, and with every
 #: episode a success nothing in the data discourages keying on it.
 PHOTOMETRIC = dict(brightness=0.3, contrast=0.3, saturation=0.3,
                    channel_gain=0.12)
@@ -116,13 +150,16 @@ def arm_act_channels(arm_ids: Sequence[int], per_arm: int = ACT_PER_ARM
     return tuple(a * per_arm + c for a in arm_ids for c in range(per_arm))
 
 
-def profile(cameras: Optional[Sequence[str]] = None) -> Dict[str, Any]:
+def profile(cameras: Optional[Sequence[str]] = None,
+            roi: str = "wide") -> Dict[str, Any]:
     """Defaults a dressing run starts from.  ``--profile none`` skips all of it."""
+    if roi not in ROIS:
+        raise KeyError(f"unknown roi {roi!r}; have {sorted(ROIS)}")
     return {
         "layout": PACKED_STATE,
         "cameras": tuple(CAMERAS_0909 if cameras is None else cameras),
         "image_size": IMAGE_SIZE,
-        "roi": ROI,
+        "roi": ROIS[roi],
         "photometric": PHOTOMETRIC,
         "action_mode": "delta_ee_pos",
         "exo_key": "zigzag_action",

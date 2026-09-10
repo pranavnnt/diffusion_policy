@@ -920,6 +920,11 @@ def main(argv=None) -> int:
                          "delta-pose action and the zigzag primitive as a "
                          "dynamics input. 'none' leaves the core defaults, "
                          "which know about no particular robot.")
+    ap.add_argument("--roi", default="wide", choices=sorted(DRESS.ROIS),
+                    help="which field of view to crop to before resizing: "
+                         "wide (89%% of the motion energy, downsampled), mid "
+                         "(77%%, exactly 240x320 so no resampling), hand (41%%, "
+                         "upsampled, no context), or full.")
     ap.add_argument("--cameras", default=None,
                     help="comma-separated zarr keys; empty for a state-only "
                          "run. Defaults to the profile's cameras.")
@@ -979,7 +984,7 @@ def main(argv=None) -> int:
                          "Channels the data never moves get 0. dap's own arms "
                          "sit at 0.016 (cap) and 0.16 (drawer).")
     a = ap.parse_args(argv)
-    prof = DRESS.profile() if a.profile == "dressing" else {}
+    prof = DRESS.profile(roi=a.roi) if a.profile == "dressing" else {}
     if a.cameras is not None:
         prof["cameras"] = tuple(c for c in a.cameras.split(",") if c)
     if a.action_mode is not None:
