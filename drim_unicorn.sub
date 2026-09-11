@@ -1,0 +1,79 @@
+#!/bin/bash
+# DRIM on the Cornell unicorn cluster.
+#
+#   sbatch drim_unicorn.sub                     # the whole ROI x vision sweep
+#   sbatch --array=0 drim_unicorn.sub           # one arm
+#   sbatch --export=ALL,BUDGET=standard drim_unicorn.sub
+#
+# Written locally because Claude Code cannot run on the login node; everything
+# that needs deciding is a variable at the top rather than something to work out
+# there.
+#
+#SBATCH -J drim
+#SBATCH -o slurm/drim_%A_%a.out
+#SBATCH -e slurm/drim_%A_%a.err
+#SBATCH -N 1
+#SBATCH -n 1
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=48G
+#SBATCH -t 12:00:00
+#SBATCH --requeue
+#SBATCH --get-user-env
+#SBATCH --gres=gpu:1
+#SBATCH --array=0-9
+
+set -euo pipefail
+export HYDRA_FULL_ERROR=1
+mkdir -p slurm
+
+# ---------------------------------------------------------------- the sweep
+# Five fields of view against two vision initialisations. The ROI is a flag
+# rather than something baked into the data, which is why the originals were
+# shipped rather than a preprocessed copy -- changing it here costs nothing.
+ROIS=(custom43 custom mid wide hand   custom43 custom mid wide hand)
+VIS=(  ""       ""     ""  ""   ""     IMAGENET1K_V1 IMAGENET1K_V1 IMAGENET1K_V1 IMAGENET1K_V1 IMAGENET1K_V1)
+
+I=${SLURM_ARRAY_TASK_ID:-0}
+ROI=${ROIS[$I]}
+VISION=${VIS[$I]}
+BUDGET=${BUDGET:-standard}
+SEED=${SEED:-0}
+TAG="roi-${ROI}_vis-${VISION:-scratch}_b-${BUDGET}_s${SEED}"
+
+# ---------------------------------------------------------------- paths
+REPO=${REPO:-$HOME/diffusion_policy}
+SHARE=/share/bhattacharjee/dlee_data/drim
+STAGE=/scratch/$USER/drim/datasets
+OUT=$SHARE/runs/$TAG
+
+echo "=== $(date) on $(hostname) ==="
+echo "  task $I   roi=$ROI   vision=${VISION:-random init}   budget=$BUDGET   seed=$SEED"
+nvidia-smi --query-gpu=name,memory.total --format=csv,noheader | sed 's/^/  gpu: /'
+
+# ------------------------------------------------- stage /share -> /scratch
+# /share is NFS and shared with the whole group; training re-reads the dataset
+# every epoch, so it is copied to the node's local disk once. `-au` makes this
+# a no-op when the node already has it, which is what makes a repeated array
+# on the same node cheap.
+mkdir -p "$STAGE"
+echo "=== staging to $STAGE ==="
+T0=$SECONDS
+for D in zigzag_bed_0910.zarr zigzag_bed_0910_2.zarr zigzag_bed_0910_3.zarr zigzag_bed_0910_4.zarr; do
+    rsync -au --info=stats2 "$SHARE/datasets/$D" "$STAGE/" 2>&1 | tail -2 | sed 's/^/  /'
+done
+echo "  staged in $((SECONDS - T0)) s; $(du -sh $STAGE | cut -f1) on local disk"
+
+# ---------------------------------------------------------------- train
+cd "$REPO"
+echo "=== training -> $OUT ==="
+mkdir -p "$OUT"
+
+# --data takes a directory and loads every .zarr inside, sorted, so the
+# episode order and therefore the seeded split are the same on every node.
+ARGS=(--data "$STAGE" --out "$OUT" --n-arms 1 --roi "$ROI"
+      --budget "$BUDGET" --seed "$SEED" --device cuda:0)
+[ -n "$VISION" ] && ARGS+=(--vision-weights "$VISION")
+
+srun ~/.conda/envs/robodiff/bin/python -u -m diffusion_policy.drim.train "${ARGS[@]}"
+
+echo "=== $(date) done: $OUT ==="
