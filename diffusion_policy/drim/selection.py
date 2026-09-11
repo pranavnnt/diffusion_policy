@@ -45,12 +45,29 @@ the wrong place to look.
 
 from __future__ import annotations
 
+import inspect as _inspect
 import json
 import os
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
+
+
+#: ``torch.load`` gained ``weights_only`` in 1.13 and flipped its default to
+#: ``True`` in 2.6.  These checkpoints carry a :class:`~diffusion_policy.drim.
+#: spec.DrimSpec` and other plain objects alongside the tensors, so the unpickler
+#: has to stay permissive -- and the cluster's usable env is torch 1.12, which
+#: rejects the keyword outright.  Asking the signature is the only thing that
+#: works on both.
+_WEIGHTS_ONLY = "weights_only" in _inspect.signature(torch.load).parameters
+
+
+def torch_load(path: str, map_location: str = "cpu") -> Any:
+    """``torch.load`` with full unpickling, on any torch back to 1.12."""
+    if _WEIGHTS_ONLY:
+        return torch.load(path, map_location=map_location, weights_only=False)
+    return torch.load(path, map_location=map_location)
 
 #: Snapshot period, in epochs.  dap's grid is never truncated to the tail — two
 #: of nine arm-seeds in its image round peaked at epoch 90 of 150, and where the
@@ -374,7 +391,7 @@ def load_selected(path: str, model, strict_parent: bool = True,
     supply.  dap's rule: unexpected keys are always an error; missing keys are an
     error unless the parent already holds every one of them.
     """
-    ck = torch.load(path, map_location=map_location, weights_only=False)
+    ck = torch_load(path, map_location=map_location)
     res = model.load_state_dict(ck["state_dict"], strict=False)
     assert not res.unexpected_keys, f"checkpoint has unknown keys: {res.unexpected_keys[:8]}"
     if strict_parent and ck.get("trainable_only"):
