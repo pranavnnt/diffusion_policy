@@ -77,6 +77,23 @@ STAGES = ("dyn", "B0", "B1", "D2")
 FAST_FRAC_DEFAULT = 0.15
 FAST_FRAC_CAP = 0.30
 
+
+def _parse_frac(given: str, profile_default=None):
+    """``--fast-frac`` as 'auto', one number, or one per channel.
+
+    The profile's own per-channel ceiling wins only when the flag was left at
+    its default: an explicit ``--fast-frac`` on the command line is a statement
+    and must not be silently overridden by the rig profile.
+    """
+    if given == "auto":
+        return "auto"
+    if given == str(FAST_FRAC_DEFAULT) and profile_default is not None:
+        return tuple(float(v) for v in profile_default)
+    if "," in given:
+        return tuple(float(v) for v in given.split(",") if v.strip())
+    return float(given)
+
+
 BUDGETS: Dict[str, Dict[str, int]] = {
     "fast":     {"dyn": 40, "B0": 30, "B1": 20, "D2": 60},
     "standard": {"dyn": 60, "B0": 60, "B1": 30, "D2": 200},
@@ -750,10 +767,11 @@ def run(zarr_path: Any, out_dir: str, seed: int = 0,
         #: channel structurally silent instead.
         spec = DrimSpec(**{**spec.to_dict(),
                            "fast_limits": fast_limits_from_fraction(
-                               float(fast_frac), spec.act_scale or
+                               fast_frac, spec.act_scale or
                                tuple([1.0] * spec.act_dim),
                                active=act["active"])})
-        summary_frac = float(fast_frac)
+        summary_frac = (float(fast_frac) if np.isscalar(fast_frac)
+                        else [float(v) for v in fast_frac])
         if not any(spec.fast_limits):
             raise ValueError(
                 "no action channel is ever nonzero in this dataset, so every "
@@ -764,10 +782,13 @@ def run(zarr_path: Any, out_dir: str, seed: int = 0,
 
     if demand:
         for i in act["active"]:
+            ceil = ("" if spec.fast_limits is None
+                    else f" | ceiling={spec.fast_limits[i]:.4f}")
             log(f"[authority] ch{i} residual demand (fraction of full command): "
                 f"vs_chunk_mean p95={demand['vs_chunk_mean']['p95'][i]:.4f} "
                 f"max={demand['vs_chunk_mean']['p100'][i]:.4f} | "
-                f"step_to_step p95={demand['step_to_step']['p95'][i]:.4f}")
+                f"step_to_step p95={demand['step_to_step']['p95'][i]:.4f}"
+                f"{ceil}")
         if spec.fast_limits is not None:
             tight = [i for i in act["active"]
                      if spec.fast_limits[i] < demand["step_to_step"]["p95"][i]]
@@ -787,6 +808,10 @@ def run(zarr_path: Any, out_dir: str, seed: int = 0,
                                 "reason": s.reason} for s in res.missing()],
                    "notes": [{"arm": s.arm, "field": s.name, "note": s.note}
                              for s in res.statuses if s.note]},
+        #: The crop is a runtime flag, so a run that did not record it cannot be
+        #: deployed without guessing — and a deployment that guesses a different
+        #: box feeds the encoder a different scene than it was trained on.
+        "roi": ({k: list(v) for k, v in roi.items()} if roi else None),
         "action_channels": act,
         "residual_demand": demand, "fast_frac": summary_frac,
         "photometric": photometric,
@@ -917,16 +942,16 @@ def run(zarr_path: Any, out_dir: str, seed: int = 0,
         last = models.get("D2") or models.get("B1") or models.get("B0")
         mods = F.modalities(res, spec.dyn_fields)
         va_eps = sorted({int(i) for i in va["episode_index"]})
+        #: the episodes D2's message was actually conditioned on, which is what
+        #: the held-out surprise has to be compared against
+        tr_eps = sorted({int(i) for i in tr["episode_index"]})
         diag: Dict[str, Any] = {}
         try:
             diag["divergence"] = DG.divergence(
                 last, frozen, mods, eps, norm, spec, va_eps, device=device,
                 n_steps=diag_steps, n_starts=diag_starts, seed=seed)
-            roll = DG.rollout(last, frozen, mods, eps, norm, spec, va_eps,
-                              diag_steps, diag_starts, device, seed)
             diag["surprise_shift"] = DG.surprise_shift(
-                frozen, mods, eps, norm, spec, roll.get("rolled_states"),
-                va_eps, device=device)
+                frozen, mods, eps, norm, spec, tr_eps, va_eps, device=device)
         except Exception as exc:                       # pragma: no cover
             log(f"      diagnostics failed: {type(exc).__name__}: {exc}")
             diag["error"] = f"{type(exc).__name__}: {exc}"
@@ -1112,8 +1137,7 @@ def main(argv=None) -> int:
         stages=tuple(a.stages.split(",")), val_ratio=a.val_ratio,
         cameras=prof.pop("cameras", ()),
         n_arms=a.n_arms, layout=prof.pop("layout", None),
-        fast_frac=(a.fast_frac if a.fast_frac == "auto"
-                   else float(a.fast_frac)),
+        fast_frac=_parse_frac(a.fast_frac, prof.pop("fast_frac", None)),
         require=tuple(r for r in a.require.split(",") if r),
         action_key=a.action_key,
         action_mode=prof.pop("action_mode", "absolute"),

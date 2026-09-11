@@ -29,7 +29,7 @@ catches a specific way dap's rounds went wrong:
 ``dynamics_skill``     negative means the model is worse than predicting no
                        change, and the message is then carrying model error.
                        dap ran a whole round in this state (-155 %).
-``surprise_shift``     ``S`` is fitted on demonstration transitions and read at
+``surprise_shift``     ``S`` is fitted on the training episodes and read at
                        states the policy visits.  On drawer its p99 went
                        2.66 -> 7.07 and its clip rate 0.0027 % -> 0.575 %, a
                        factor of 213.  This measures the same thing here by
@@ -132,6 +132,21 @@ def rollout(model, dyn: DY.FrozenDynamics, mods, eps, norm, spec: DrimSpec,
             a_norm = torch.clamp(nominal + r, -1.0, 1.0)
             a_raw = torch.as_tensor(
                 norm.invert_vec("target", a_norm.cpu().numpy()), device=device)
+            #: Back to the quantity the dynamics was fitted on.  Under
+            #: ``delta_ee_pos`` the policy predicts ``action - ee_pos`` while
+            #: ``hist_a`` — and therefore the dynamics — carries the *absolute*
+            #: pose target, so the pose has to be added back before the action
+            #: is handed over.  Adding the **rolled** pose rather than the
+            #: demonstration's is what makes this closed loop: the operator's
+            #: nudge is relative to where the arm actually is.
+            #:
+            #: Feeding the bare delta instead is not a small error. It is a
+            #: few centimetres where half a metre is expected, which queries
+            #: the dynamics far outside anything it was fitted on; the rollout
+            #: then compounds to 1e19 and NaN while the demonstrated-action
+            #: floor, which used the absolute action all along, stays flat.
+            if spec.action_mode == "delta_ee_pos" and ee is not None:
+                a_raw = a_raw + y[:, ee[0]:ee[1]]
             if use_demo_actions:
                 a_raw = torch.as_tensor(ep["action"][t:t + 1][:, chans],
                                         dtype=torch.float32, device=device)
@@ -152,8 +167,13 @@ def rollout(model, dyn: DY.FrozenDynamics, mods, eps, norm, spec: DrimSpec,
             #: different physical scales contribute comparably
             sd = torch.as_tensor(dyn.norm.ys, device=device)
             div[i, k] = float(((y_next - truth) / sd).norm(dim=-1).item())
+            #: Compared in target units, so the demonstration has to be put
+            #: through the same definition the policy predicts.
+            demo_t = ep["action"][t:t + 1][:, chans]
+            if spec.action_mode == "delta_ee_pos" and ee is not None:
+                demo_t = demo_t - ep["dyn"][t:t + 1, ee[0]:ee[1]]
             adiv[i, k] = float((a_norm - torch.as_tensor(
-                norm.apply_vec("target", ep["action"][t:t + 1][:, chans]),
+                norm.apply_vec("target", demo_t),
                 device=device)).norm(dim=-1).item())
             if ee is not None:
                 eediv[i, k] = float(
@@ -220,40 +240,67 @@ def divergence(model, dyn, mods, eps, norm, spec, episodes, device="cpu",
 
 
 @torch.no_grad()
-def surprise_shift(dyn, mods, eps, norm, spec, rolled: np.ndarray,
-                   episodes: Sequence[int], device: str = "cpu") -> Dict[str, Any]:
-    """``S`` on demonstration transitions vs on the states the policy reaches.
+def surprise_shift(dyn, mods, eps, norm, spec, train_episodes: Sequence[int],
+                   val_episodes: Sequence[int], device: str = "cpu",
+                   rolled: Optional[np.ndarray] = None) -> Dict[str, Any]:
+    """``S`` on the episodes D2 trained on vs ``S`` on episodes it has not seen.
 
-    dap's single most expensive surprise: the channel the whole message is made
-    of moves between the two, and by a lot.  A large shift here means D2 is
-    conditioned at inference on values it never saw in training.
+    dap's most expensive surprise was that the channel the whole message is made
+    of moves between training and inference.  The question is real; the obvious
+    way to ask it offline is not.
+
+    This used to compare ``S`` on demonstration transitions with ``S`` on the
+    states a rollout reaches, and that comparison **cannot be computed offline
+    at all**.  ``surprise`` needs ``(y, a, y_next)``; in a rollout ``y_next`` is
+    produced by this very model, so ``d_real`` *is* ``mu`` and ``nu`` is
+    identically zero.  Pairing the rolled states with demonstration actions
+    instead — which is what the old code did, and with indices taken from the
+    top of the episode list rather than from the rolled states' own times —
+    compares a pose at one moment against a command from an unrelated one.  It
+    reported x169 on a run whose policy stayed 0.11 mm from the replay floor,
+    two diagnostics that cannot both be true.  Measured properly the shift is
+    x1.1.
+
+    What is both answerable and the thing actually at stake: D2 is conditioned
+    on ``S`` computed from the **training** episodes, and at deployment meets
+    ``S`` computed from data nobody has seen.  Held-out episodes are exactly
+    that, and every transition in them is real.  ``rolled`` is accepted and
+    ignored, so old callers do not break.
     """
-    ys, yns, acts, dts, xos = [], [], [], [], []
     chans = list(spec.act_channels) or list(range(spec.act_dim))
-    for j in episodes:
-        ep = eps.episodes[j]
-        ys.append(ep["dyn"][:-1]); yns.append(ep["dyn"][1:])
-        acts.append(ep["action"][:-1][:, chans]); dts.append(ep["dt"][:-1])
-        xos.append(ep["exo"][:-1])
-    f = lambda xs: torch.as_tensor(np.concatenate(xs), dtype=torch.float32,
-                                   device=device)
-    xo_all = f(xos) if spec.exo_dim else None
-    train = DY.surprise(dyn, f(ys), f(yns), f(acts), f(dts), xo_all)
-    out = {"demonstration": DY.clip_report(train["S_RAW"].cpu().numpy()),
-           "saturation_U": DY.saturation(train["U"].cpu().numpy())}
-    if rolled is not None and len(rolled) > 2:
-        r = torch.as_tensor(rolled, dtype=torch.float32, device=device)
-        a = f(acts)[:len(r) - 1]
-        d = f(dts)[:len(r) - 1]
-        roll = DY.surprise(dyn, r[:-1][:len(a)], r[1:][:len(a)], a, d,
-                           xo_all[:len(a)] if xo_all is not None else None)
-        out["rolled"] = DY.clip_report(roll["S_RAW"].cpu().numpy())
-        dm, rm = out["demonstration"], out["rolled"]
-        out["p99_ratio"] = float(rm["p99"] / max(dm["p99"], 1e-9))
-        out["clip_rate_ratio"] = float(
-            rm["frac_reaching_clip"] / max(dm["frac_reaching_clip"], 1e-9)
-            if dm["frac_reaching_clip"] > 0 else float("inf")
-            if rm["frac_reaching_clip"] > 0 else 1.0)
+
+    def _S(idx):
+        ys, yns, acts, dts, xos = [], [], [], [], []
+        for j in idx:
+            ep = eps.episodes[j]
+            ys.append(ep["dyn"][:-1]); yns.append(ep["dyn"][1:])
+            acts.append(ep["action"][:-1][:, chans]); dts.append(ep["dt"][:-1])
+            xos.append(ep["exo"][:-1])
+        if not ys:
+            return None
+        f = lambda xs: torch.as_tensor(np.concatenate(xs), dtype=torch.float32,
+                                       device=device)
+        return DY.surprise(dyn, f(ys), f(yns), f(acts), f(dts),
+                           f(xos) if spec.exo_dim else None)
+
+    tr, va = _S(list(train_episodes)), _S(list(val_episodes))
+    if tr is None or va is None:
+        return {}
+    out = {"trained_on": DY.clip_report(tr["S_RAW"].cpu().numpy()),
+           "held_out": DY.clip_report(va["S_RAW"].cpu().numpy()),
+           "saturation_U": DY.saturation(tr["U"].cpu().numpy()),
+           "saturation_U_held_out": DY.saturation(va["U"].cpu().numpy())}
+    #: kept under the old names so the detector and every saved summary keep
+    #: reading the same fields
+    out["demonstration"] = out["trained_on"]
+    out["rolled"] = out["held_out"]
+    a, b = out["trained_on"], out["held_out"]
+    out["p99_ratio"] = float(b["p99"] / max(a["p99"], 1e-9))
+    out["clip_rate_ratio"] = float(
+        b["frac_reaching_clip"] / max(a["frac_reaching_clip"], 1e-9)
+        if a["frac_reaching_clip"] > 0 else
+        float("inf") if b["frac_reaching_clip"] > 0 else 1.0)
+    out["compares"] = "held-out episodes against the episodes D2 trained on"
     return out
 
 
@@ -327,8 +374,8 @@ def diagnose_run(run_dir: str, data: Any, device: str = "cpu",
                      message_window=saved.message_window))
     spec.assert_schema(saved)
 
-    dyn_ck = torch.load(os.path.join(run_dir, f"dynamics_seed{seed}.pt"),
-                        map_location=device, weights_only=False)
+    dyn_ck = SEL.torch_load(os.path.join(run_dir, f"dynamics_seed{seed}.pt"),
+                            map_location=device)
     mods = [(n, tuple(sl), w, k) for n, sl, w, k in dyn_ck["mods"]]
     m = DY.DeltaDynamics(mods, saved.act_dim, exo_dim=saved.exo_dim)
     m.load_state_dict(dyn_ck["state_dict"])
@@ -348,14 +395,12 @@ def diagnose_run(run_dir: str, data: Any, device: str = "cpu",
     log(f"[diagnose] {run_dir}: loaded up to {loaded}")
 
     va_eps = sorted({int(i) for i in va["episode_index"]})
+    tr_eps = sorted({int(i) for i in tr["episode_index"]})
     diag = {"divergence": divergence(model, frozen, mods, eps, norm, spec,
                                      va_eps, device=device, n_steps=n_steps,
                                      n_starts=n_starts, seed=seed)}
-    roll = rollout(model, frozen, mods, eps, norm, spec, va_eps, n_steps,
-                   n_starts, device, seed)
     diag["surprise_shift"] = surprise_shift(frozen, mods, eps, norm, spec,
-                                            roll.get("rolled_states"), va_eps,
-                                            device=device)
+                                            tr_eps, va_eps, device=device)
     summary["diagnostics"] = diag
     for k, v in (diag["divergence"].get("at") or {}).items():
         log(f"      {k:8s} ({v['seconds']:4.1f}s)  policy {v['policy_ee_mm']:7.2f} mm"
@@ -364,7 +409,7 @@ def diagnose_run(run_dir: str, data: Any, device: str = "cpu",
     sh = diag["surprise_shift"]
     if "p99_ratio" in sh:
         log(f"      surprise p99 x{sh['p99_ratio']:.2f}, clip rate "
-            f"x{sh['clip_rate_ratio']:.1f}  (demonstration -> rolled)")
+            f"x{sh['clip_rate_ratio']:.1f}  (trained-on -> held-out)")
     for v in detectors(summary):
         log(f"      {v}")
     out = os.path.join(run_dir, f"diagnostics_seed{seed}.json")
@@ -484,7 +529,7 @@ def detectors(summary: Dict[str, Any]) -> List[str]:
     if "p99_ratio" in sh:
         r = sh["p99_ratio"]
         out.append(f"{'OK  ' if r < 2 else 'WARN'} surprise p99 shift x{r:.1f} "
-                   f"demonstration -> rolled"
+                   f"trained-on -> held-out"
                    + ("" if r < 2 else "  <-- D2 conditions on values it never "
                                        "saw in training"))
     tb = summary.get("trivial_action_baselines") or {}
