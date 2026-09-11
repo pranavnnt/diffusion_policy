@@ -47,19 +47,56 @@ from typing import Any, Dict, Optional, Sequence, Tuple
 
 from diffusion_policy.drim import fields as F
 
-#: One arm's action: 3 linear m/s then 3 angular rad/s.
-ACT_PER_ARM: int = 6
-
-#: The teleop's full-deflection command, from
-#: ``dressing_policies/data_collection/single_joystick_teleop.py``
-#: (``LIN_SCALE = 0.02``, ``ANG_SCALE = 0.05``).  Used to normalise actions so
-#: that one unit means "full command" and a fast-level ceiling expressed as a
-#: fraction of it is comparable across recordings.
+#: One arm's action: 3 channels, the end-effector position target.  The
+#: ``zigzag_bed_*`` recordings write ``data/action`` as ``(T, 3)`` — there is no
+#: angular half, and with ``action_mode="delta_ee_pos"`` the quantity the policy
+#: predicts is ``action - ee_pos``, a pose *offset* in metres.
 #:
-#: A *scripted* controller is under no obligation to stay inside what the
-#: joystick can command — the zigzag runs to 0.08 m/s — so the loader falls back
-#: to the observed range whenever a recording exceeds this.
-ARM_ACT_SCALE: Tuple[float, ...] = (0.02, 0.02, 0.02, 0.05, 0.05, 0.05)
+#: This was 6 while the bimanual teleop was the reference recording.  Six was
+#: not merely unused on a 3-wide action, it was silently corrosive: the spec
+#: derives ``per_arm`` from the recorded width and gets 3, the declared scale
+#: below is then 6 long, the two disagree, and the loader drops the declared
+#: scale entirely and normalises by whatever range this particular recording
+#: happened to cover.  A ceiling expressed as a fraction of that is a fraction
+#: of one dataset, comparable with nothing.
+ACT_PER_ARM: int = 3
+
+#: What one normalised unit of action means, in metres of pose offset.
+#:
+#: Not the teleop's ``LIN_SCALE = 0.02``: that is a *velocity* deflection, and
+#: the recorded offset reaches 0.039 m because the target leads the measured
+#: pose by the controller's standing tracking error.  A scale the recording
+#: exceeds is rejected by :func:`~diffusion_policy.drim.spec.from_resolution`
+#: — the sampler clamps to [-1, 1], so a target beyond the scale is unreachable
+#: for any parameter values — and 0.02 is exceeded on x by 1.96x.
+#:
+#: Measured over all 119 episodes (94,611 steps), ``|action - ee_pos|`` reaches
+#: x 0.0392, y 0.0196, z 0.0072 m.  These are those maxima with ~1.5-2x
+#: headroom, rounded: they are declared constants of the rig, not statistics of
+#: this drop, so a later recording is still comparable as long as it fits.
+ARM_ACT_SCALE: Tuple[float, ...] = (0.06, 0.03, 0.015)
+
+#: The fast level's per-channel ceiling, as a fraction of ``ARM_ACT_SCALE``.
+#:
+#: One number for all three axes cannot be right here: the axes differ by more
+#: than an order of magnitude.  Per-step demand (``|a_t - a_{t-1}|`` over the
+#: executed prefix, p99, all 119 episodes) is 5.93 mm on x but 0.29 mm on y and
+#: 0.54 mm on z — so a single 0.15 both clips x on ordinary motion and hands y
+#: fifty times the authority its own motion justifies.
+#:
+#: Set from that demand with room for the reactive case, which the
+#: demonstrations cannot show: every episode is an unperturbed success, so
+#: sizing purely by demonstrated demand would leave the corrector unable to
+#: answer a disturbance it was built for.  Each ceiling sits above the largest
+#: within-chunk deviation observed on its channel and under
+#: ``train.FAST_FRAC_CAP`` (0.30), which is the project's own bound on how much
+#: a reflex may ever be given.
+#:
+#:     channel   scale     ceiling            step p99    within-chunk max
+#:     x         0.06 m    0.25  = 15.0 mm    5.93 mm     18.4 mm
+#:     y         0.03 m    0.05  =  1.5 mm    0.29 mm      0.97 mm
+#:     z         0.015 m   0.10  =  1.5 mm    0.54 mm      1.26 mm
+ARM_FAST_FRAC: Tuple[float, ...] = (0.25, 0.05, 0.10)
 
 #: ``demo_for_testing/image_trials_4.zarr`` and the ``zigzag_bed_*`` recordings
 #: pack per-arm state into one array: 7 joint positions, 3 eef position, 4 eef
@@ -190,5 +227,6 @@ def profile(cameras: Optional[Sequence[str]] = None,
         "exo_key": "zigzag_action",
         "act_scale_per_arm": ARM_ACT_SCALE,
         "act_per_arm": ACT_PER_ARM,
+        "fast_frac": ARM_FAST_FRAC,
         **HORIZONS,
     }

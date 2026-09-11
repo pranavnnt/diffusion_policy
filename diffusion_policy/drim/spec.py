@@ -204,7 +204,7 @@ class DrimSpec:
         return cls(**d)
 
 
-def fast_limits_from_fraction(frac: float, act_scale: Sequence[float],
+def fast_limits_from_fraction(frac, act_scale: Sequence[float],
                               active: Sequence[int] = ()) -> Tuple[float, ...]:
     """Ceilings as a fraction of full command authority.
 
@@ -220,10 +220,21 @@ def fast_limits_from_fraction(frac: float, act_scale: Sequence[float],
     ``active`` names the channels the corrector may write; every other channel
     gets 0, which :class:`~diffusion_policy.drim.nets.FastCorrector` makes
     structurally silent rather than merely discouraged.
+
+    ``frac`` may be one number for every channel, or one per channel.  The
+    per-channel form is what a rig with axes of genuinely different travel
+    needs: a single fraction is either too tight on the axis that moves or far
+    wider than the others can justify, and a ceiling wider than a channel's own
+    motion is authority the corrector was never shown how to use.
     """
-    assert 0.0 <= frac <= 1.0, f"a fraction of full command, got {frac}"
-    keep = set(active) if len(active) else set(range(len(act_scale)))
-    return tuple(frac if i in keep else 0.0 for i in range(len(act_scale)))
+    n = len(act_scale)
+    fr = ([float(frac)] * n if np.isscalar(frac)
+          else [float(v) for v in frac])
+    assert len(fr) == n, f"{len(fr)} ceilings for {n} channels"
+    for v in fr:
+        assert 0.0 <= v <= 1.0, f"a fraction of full command, got {v}"
+    keep = set(active) if len(active) else set(range(n))
+    return tuple(fr[i] if i in keep else 0.0 for i in range(n))
 
 
 def fast_frac_from_demand(demand: Dict[str, Any], active: Sequence[int],

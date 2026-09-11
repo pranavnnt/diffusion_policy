@@ -588,22 +588,42 @@ def load_split(zarr_path: str, cameras: Sequence[str] = (), n_arms: int = 2,
         spec_kw["crop_shape"] = (int(round(native[0] * 0.9)),
                                  int(round(native[1] * 0.9)))
     all_act = np.concatenate([e["action"] for e in eps.episodes])
+    #: The range that decides whether a declared command scale is usable has to
+    #: be the range of the quantity the policy actually predicts.  Under
+    #: ``delta_ee_pos`` that is ``action - ee_pos``, a pose *offset* of a few
+    #: centimetres — not the recorded action, which is an absolute pose target
+    #: half a metre from the base.  Measuring the raw action here rejected every
+    #: physically-sized scale and silently fell back to this dataset's own
+    #: range, which is exactly the comparability the scale exists to provide.
+    rng_act = all_act
+    if spec_kw.get("action_mode") == "delta_ee_pos":
+        _ee = ee_pos_slice(eps.resolution, eps.resolution.prop_names())
+        if _ee is not None and all_act.shape[-1] == _ee[1] - _ee[0]:
+            rng_act = np.concatenate(
+                [e["action"] - e["prop"][:, _ee[0]:_ee[1]] for e in eps.episodes])
     spec = from_resolution(eps.resolution, cameras=cameras,
                            act_width=all_act.shape[-1],
                            n_declared=eps.n_declared,
-                           act_range=np.abs(all_act).max(0).tolist(),
+                           act_range=np.abs(rng_act).max(0).tolist(),
                            act_scale_per_arm=act_scale_per_arm,
                            act_per_arm=act_per_arm,
                            exo_dim=int(eps.episodes[0]["exo"].shape[-1]),
                            **spec_kw)
     if spec.act_scale is None and warn_scale:
+        declared = (len(act_scale_per_arm) if act_scale_per_arm else 0)
+        per_arm = spec.act_dim // max(len(eps.resolution.arms), 1)
+        why = (f"the declared scale is {declared} wide but this recording puts "
+               f"{per_arm} channels on an arm"
+               if declared and declared != per_arm else
+               f"this recording runs past the declared scale "
+               f"(max |target| {np.abs(rng_act).max(0).round(4).tolist()} "
+               f"against {list(act_scale_per_arm or ())})")
         warnings.warn(
-            f"actions are {spec.act_dim}-wide, which is not the 3-linear + "
-            f"3-angular layout the declared command scale describes, so they "
-            f"are normalised by their observed range instead. A ceiling "
-            f"expressed as a fraction of that is a fraction of *this dataset's* "
-            f"range, not of full command, and is not comparable across "
-            f"recordings.", stacklevel=2)
+            f"the declared command scale was not used ({why}), so actions are "
+            f"normalised by their observed range instead. A ceiling expressed "
+            f"as a fraction of that is a fraction of *this dataset's* range, "
+            f"not of full command, and is not comparable across recordings.",
+            stacklevel=2)
     n_rec = eps.episodes[0]["action"].shape[-1]
     if len(spec.act_channels) < n_rec:
         dropped = [c for c in range(n_rec) if c not in spec.act_channels]
