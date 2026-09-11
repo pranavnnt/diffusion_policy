@@ -382,15 +382,25 @@ def test_action_is_trimmed_to_the_arms_the_state_covers():
 
 
 def test_action_channels_follow_the_live_arm_not_its_position():
-    """With arm1 dropped, arm2's channels are 6..11 — not 0..5."""
+    """With arm1 dropped, arm2's channels are 6..11 — not 0..5.
+
+    ``per_arm`` is stated rather than taken from ``ACT_PER_ARM``: that constant
+    tracks whichever recording is current (3 for the single-arm zigzag), while
+    the invariant here is about the bimanual teleop's 6-wide layout and must
+    keep describing it.
+    """
     from diffusion_policy.drim.dressing import arm_act_channels
-    assert arm_act_channels((1,)) == (6, 7, 8, 9, 10, 11)
-    assert arm_act_channels((0, 1))[-1] == 11
+    assert arm_act_channels((1,), per_arm=6) == (6, 7, 8, 9, 10, 11)
+    assert arm_act_channels((0, 1), per_arm=6)[-1] == 11
+    #: and the same rule on the 3-wide single-arm recording
+    assert arm_act_channels((1,), per_arm=3) == (3, 4, 5)
 
 
 def test_dead_channels_get_zero_authority():
     from diffusion_policy.drim.spec import fast_limits_from_fraction
-    from diffusion_policy.drim.dressing import ARM_ACT_SCALE
+    #: A 6-wide scale, stated here rather than imported, so the test keeps
+    #: exercising the wide case whatever the current rig records.
+    ARM_ACT_SCALE = (0.02, 0.02, 0.02, 0.05, 0.05, 0.05)
     lim = fast_limits_from_fraction(0.05, ARM_ACT_SCALE, active=[1])
     assert lim == (0.0, 0.05, 0.0, 0.0, 0.0, 0.0)
     #: and a zero ceiling is structurally silent, not merely small
@@ -414,7 +424,10 @@ def test_fraction_must_be_a_fraction():
 def test_actions_normalise_by_the_declared_command_scale():
     """Full deflection maps to +/-1 regardless of what this dataset happened to use."""
     from diffusion_policy.drim.dataset import ChunkNormaliser
-    from diffusion_policy.drim.dressing import ARM_ACT_SCALE
+    #: The bimanual teleop's scale, written out rather than imported: the point
+    #: is that *a* declared scale maps full deflection to 1, whatever the rig
+    #: currently records.
+    ARM_ACT_SCALE = (0.02, 0.02, 0.02, 0.05, 0.05, 0.05)
     data = {"target": np.full((4, 8, 6), 0.001, np.float32)}   # a timid dataset
     n = ChunkNormaliser(data, act_scale=ARM_ACT_SCALE)
     full = np.array([[[0.02, 0.02, 0.02, 0.05, 0.05, 0.05]]], np.float32)
@@ -757,9 +770,9 @@ def test_verdict_fails_when_the_copycat_wins():
 def test_unreachable_targets_are_flagged():
     """sample_chunk clamps to [-1,1]; a target beyond it cannot be produced."""
     from diffusion_policy.drim.spec import from_resolution
-    from diffusion_policy.drim.dressing import ARM_ACT_SCALE, ACT_PER_ARM
     res = FL.resolve(_packed_source(arm2_live=False), n_arms=2,
                      layout=FL.SMOKE_LAYOUT, warn=False)
+    ARM_ACT_SCALE, ACT_PER_ARM = (0.02, 0.02, 0.02, 0.05, 0.05, 0.05), 6
     #: within the declared command scale -> the declaration is used
     kw = dict(act_scale_per_arm=ARM_ACT_SCALE, act_per_arm=ACT_PER_ARM)
     ok = from_resolution(res, act_width=6, n_declared=1,
@@ -1078,9 +1091,312 @@ def test_divergence_runs_with_an_exogenous_command():
 def test_surprise_shift_runs_with_an_exogenous_command():
     from diffusion_policy.drim import diagnose as DG
     spec, mods, eps, norm, dyn = _exo_setup()
-    model = PL.build("B0", spec)
-    roll = DG.rollout(model, dyn, mods, eps, norm, spec, [0, 1],
-                      n_steps=4, n_starts=4)
-    out = DG.surprise_shift(dyn, mods, eps, norm, spec,
-                            roll.get("rolled_states"), [0, 1])
-    assert "demonstration" in out and "rolled" in out and "p99_ratio" in out
+    out = DG.surprise_shift(dyn, mods, eps, norm, spec, [0], [1])
+    assert "trained_on" in out and "held_out" in out and "p99_ratio" in out
+    #: the old field names still resolve, so saved summaries keep reading
+    assert out["demonstration"] is out["trained_on"]
+    assert out["rolled"] is out["held_out"]
+
+
+def test_surprise_shift_compares_real_transitions_not_the_models_own_output():
+    """The rolled arm this replaced could not be computed offline at all.
+
+    ``surprise`` is ``nu = d_real - mu``.  In a rollout ``y_next`` is produced
+    by this model, so ``d_real`` *is* ``mu`` and ``nu`` is identically zero —
+    there is no ground truth at the states a policy reaches unless a robot went
+    there.  The old code papered over that by pairing rolled states with
+    demonstration actions taken from the top of the episode list, which
+    compares a pose at one moment against a command from an unrelated one, and
+    reported x169 on a run whose policy stayed 0.11 mm from the replay floor.
+    """
+    from diffusion_policy.drim import diagnose as DG
+    from diffusion_policy.drim import dynamics as DY
+    spec, mods, eps, norm, dyn = _exo_setup()
+
+    #: feeding a model its own prediction back as the truth yields no surprise
+    ep = eps.episodes[0]
+    y = torch.as_tensor(ep["dyn"][:8], dtype=torch.float32)
+    a = torch.as_tensor(ep["action"][:8], dtype=torch.float32)
+    dt = torch.as_tensor(ep["dt"][:8], dtype=torch.float32)
+    xo = torch.as_tensor(ep["exo"][:8], dtype=torch.float32)
+    with torch.no_grad():
+        mu, _ = dyn(y, a, dt, xo)
+        d_raw = mu * torch.as_tensor(dyn.norm.ds) + torch.as_tensor(dyn.norm.dm)
+        y_self = DY.torch_apply_delta(y, d_raw, mods)
+        s_self = DY.surprise(dyn, y, y_self, a, dt, xo)
+    assert float(s_self["NU_RAW"].abs().max()) < 1e-4, (
+        "a rollout's own next state carries no surprise by construction")
+
+    #: whereas real transitions do
+    out = DG.surprise_shift(dyn, mods, eps, norm, spec, [0], [1])
+    assert out["trained_on"]["p99"] > 0
+
+
+def _delta_store(tmp_path, offset):
+    """A one-arm recording whose action is an absolute pose target.
+
+    ``offset`` is the standing gap between the target and the measured pose —
+    the thing ``delta_ee_pos`` actually predicts. The pose itself sits half a
+    metre from the base, which is the whole point: the two have completely
+    different magnitudes.
+    """
+    import zarr
+    n, eps = 60, 2
+    path = str(tmp_path / "delta.zarr")
+    g = zarr.open(path, "w")
+    rng = np.random.default_rng(0)
+    state = np.zeros((n * eps, 14), np.float32)
+    state[:, 7:10] = 0.5 + rng.normal(0, 0.001, (n * eps, 3))   # ee_pos, far out
+    state[:, 10] = 1.0                                          # unit quaternion
+    g.create_dataset("data/state", data=state)
+    g.create_dataset("data/action",
+                     data=(state[:, 7:10] + offset).astype(np.float32))
+    g.create_dataset("meta/episode_ends",
+                     data=np.array([n, n * eps], np.int64))
+    return path
+
+
+def test_declared_scale_is_judged_against_the_delta_not_the_pose(tmp_path):
+    """Under ``delta_ee_pos`` the scale describes ``action - ee_pos``.
+
+    Judging it against the recorded action instead compares a few-centimetre
+    ceiling with a half-metre absolute pose, rejects every physically-sized
+    declaration, and silently normalises by this dataset's own range — which is
+    precisely the cross-recording comparability the declaration exists to give.
+    """
+    from diffusion_policy.drim.dataset import load_split
+    from diffusion_policy.drim import fields as FLD
+    layout = FLD.PackedLayout(
+        stride=14, slices={"q": (0, 7), "ee_pos": (7, 10), "ee_quat": (10, 14)})
+    scale = (0.06, 0.03, 0.015)
+    kw = dict(cameras=(), n_arms=1, layout=layout, val_ratio=0.5, seed=0,
+              action_key="action", image_size=None, exo_key=None,
+              act_scale_per_arm=scale, act_per_arm=3, roi=None,
+              spec_kw=dict(action_mode="delta_ee_pos", pred_horizon=16,
+                           exec_horizon=8, message_window=32))
+    #: a delta inside the declared scale -> the declaration survives
+    (tmp_path / "a").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "b").mkdir(parents=True, exist_ok=True)
+    inside = _delta_store(tmp_path / "a", np.array([0.03, 0.01, 0.005], np.float32))
+    *_, spec = load_split([inside], **kw)
+    assert spec.act_scale == scale
+
+    #: and a delta that runs past it is still rejected, as it must be: the
+    #: sampler clamps to [-1, 1], so such a target is unreachable outright
+    outside = _delta_store(tmp_path / "b", np.array([0.09, 0.01, 0.005], np.float32))
+    *_, spec2 = load_split([outside], **kw)
+    assert spec2.act_scale is None
+
+
+# --------------------------------------------------------------------------- #
+# 17. the rollout must hand the dynamics the *units* it was trained with
+# --------------------------------------------------------------------------- #
+
+
+class _ConstPolicy:
+    """Emits one fixed action chunk, in target units, with no corrector."""
+
+    def __init__(self, spec, value):
+        self.spec, self.value = spec, float(value)
+
+    def eval(self):
+        return self
+
+    def train(self, mode: bool = True):
+        return self
+
+    def context(self, rgb, prop2, wrench2):
+        return prop2[:, -1]
+
+    def sample_chunk(self, ctx, msg, _):
+        return torch.full((1, self.spec.pred_horizon, self.spec.act_dim),
+                          self.value)
+
+    def step_features(self, chunk):
+        return chunk
+
+    def residual_step(self, feats, idx, sp, sw, msg):
+        return torch.zeros(1, self.spec.act_dim)
+
+
+class _SpyDyn:
+    """Wraps the dynamics and records every action it is handed."""
+
+    def __init__(self, dyn):
+        self._d, self.seen = dyn, []
+
+    def __call__(self, y, a, dt, xo=None):
+        self.seen.append(a.detach().cpu().numpy().copy())
+        return self._d(y, a, dt, xo)
+
+    def __getattr__(self, k):
+        return getattr(self._d, k)
+
+
+def _delta_rollout_setup():
+    from diffusion_policy.drim import dynamics as D
+    from diffusion_policy.drim.dataset import ChunkNormaliser
+    mods = [("arm1_ee_pos", (0, 3), 3, "linear"),
+            ("arm1_ee_rot", (3, 7), 3, "quat")]
+    spec = DrimSpec(prop_dim=7, act_dim=3, wrench_dim=0, cameras=(),
+                    pred_horizon=4, exec_horizon=2, message_window=2,
+                    fast_limits=(0.15,) * 3, action_mode="delta_ee_pos")
+    m = D.DeltaDynamics(mods, spec.act_dim).eval()
+    eps = _Eps(spec, mods)
+    #: an absolute pose target half a metre out whose *delta* from the measured
+    #: pose is centimetres — the real recording's arrangement, and the one that
+    #: makes the two quantities impossible to confuse by magnitude alone
+    for e in eps.episodes:
+        e["dyn"][:, 0:3] += 0.5
+        e["prop"] = e["dyn"][:, :spec.prop_dim]
+        e["action"] = (e["dyn"][:, 0:3] + 0.03).astype(np.float32)
+    ys = np.concatenate([e["dyn"] for e in eps.episodes])
+    ds = D.state_delta(ys[:-1], ys[1:], mods)
+    dyn = D.FrozenDynamics(m, D.Normaliser(y=ys, d=ds))
+    tgt = np.concatenate([e["action"] - e["dyn"][:, 0:3] for e in eps.episodes])
+    norm = ChunkNormaliser({"prop2": ys[:, None, :spec.prop_dim],
+                            "step_prop": ys[:, None, :spec.prop_dim],
+                            "target": tgt[:, None]})
+    return spec, mods, eps, norm, dyn
+
+
+def test_rollout_hands_the_dynamics_an_absolute_action_under_delta_mode():
+    """The policy predicts ``action - ee_pos``; the dynamics was fitted on
+    ``action``.
+
+    ``hist_a`` carries the absolute pose target, so the rollout has to add the
+    pose back before handing the action over — and the *rolled* pose, which is
+    what makes the loop closed.  Feeding the bare delta is not a small error: it
+    is centimetres where half a metre is expected, which queries the dynamics
+    far outside anything it was fitted on.  On the full run that compounded to
+    1e19 by step 16 and NaN by step 32, while the demonstrated-action floor,
+    which used the absolute action all along, stayed flat at ~1.0.
+    """
+    from diffusion_policy.drim import diagnose as DG
+    spec, mods, eps, norm, dyn = _delta_rollout_setup()
+    assert DG._ee_slice(mods) == (0, 3)
+    spy = _SpyDyn(dyn)
+    #: normalised 0 is the mean target, i.e. the demonstrated 0.03 m delta
+    model = _ConstPolicy(spec, 0.0)
+    out = DG.rollout(model, spy, mods, eps, norm, spec, [0, 1],
+                     n_steps=6, n_starts=3, seed=0)
+    assert out and np.isfinite(out["state_divergence"]).all()
+    seen = np.concatenate(spy.seen)
+    #: the pose sits at ~0.5 and the delta at 0.03; an action that never left
+    #: delta units would land near 0.03, two orders of magnitude below
+    assert seen.mean() > 0.3, (
+        f"the dynamics was handed {seen.mean():.4f}, which is the bare delta, "
+        f"not the absolute pose target it was trained on")
+
+    #: and the floor is unchanged by the fix, since it used ep["action"] already
+    flo = DG.rollout(model, dyn, mods, eps, norm, spec, [0, 1], n_steps=6,
+                     n_starts=3, seed=0, use_demo_actions=True)
+    assert np.isfinite(flo["state_divergence"]).all()
+
+
+# --------------------------------------------------------------------------- #
+# 18. inference: the contract the robot is held to
+# --------------------------------------------------------------------------- #
+
+
+def test_inference_crop_matches_the_loader_exactly():
+    """``crop_resize`` and ``DrimEpisodes`` must agree on the ROI tuple order.
+
+    The boxes are ``(y0, x0, h, w)``. Read as ``(x, y, w, h)`` the front box
+    runs 544 rows down a 480-row frame, which at least fails loudly; the back
+    box fits both readings and would have silently fed the encoder a different
+    part of the scene than training saw, with nothing downstream to say so.
+    """
+    from diffusion_policy.drim.infer import crop_resize
+    from diffusion_policy.drim import dressing as DRESS
+
+    rng = np.random.default_rng(0)
+    img = rng.integers(0, 255, (480, 640, 3), dtype=np.uint8)
+    size = (240, 320)
+    for cam, box in DRESS.ROI.items():
+        y0, x0, h, w = box
+        mine = crop_resize(img, box, size)
+        #: the loader's own slice, written out, is the thing being matched
+        import cv2
+        want = cv2.resize(img[y0:y0 + h, x0:x0 + w], (size[1], size[0]),
+                          interpolation=cv2.INTER_AREA)
+        assert mine.shape == (size[0], size[1], 3)
+        assert np.array_equal(mine, want), f"{cam} crop disagrees with the loader"
+
+
+def test_inference_refuses_a_frame_the_box_does_not_fit():
+    from diffusion_policy.drim.infer import crop_resize
+    with pytest.raises(AssertionError, match="not producing what the run"):
+        crop_resize(np.zeros((240, 320, 3), np.uint8), (32, 120, 318, 424),
+                    (240, 320))
+
+
+def test_inference_returns_an_absolute_pose_under_delta_mode():
+    """The network predicts ``action - ee_pos``; the robot takes a pose.
+
+    Held by a stub so it tests the runner's arithmetic rather than a trained
+    policy's opinion: a chain whose output is a known delta must come back as
+    that delta plus the *measured* pose.
+    """
+    from diffusion_policy.drim.infer import DrimRunner, Observation
+    from diffusion_policy.drim.dataset import ChunkNormaliser
+
+    spec = DrimSpec(prop_dim=27, act_dim=3, wrench_dim=6, cameras=(),
+                    pred_horizon=4, exec_horizon=2, message_window=3,
+                    fast_limits=(0.25, 0.05, 0.1), action_mode="delta_ee_pos",
+                    exo_dim=6, act_scale=(0.06, 0.03, 0.015),
+                    prop_fields=("q", "dq", "ee_pos", "ee_quat", "ee_twist"),
+                    wrench_fields=("wrench",))
+    DELTA = np.float32([0.03, -0.01, 0.005])
+
+    class _Stub:
+        cond_dim = 0
+
+        def eval(self):
+            return self
+
+        def context(self, rgb, prop, wrench=None):
+            return torch.zeros(1, 4)
+
+        def sample_chunk(self, ctx, msg, _):
+            n = ChunkNormaliser({"target": np.zeros((2, 1, 3), np.float32)})
+            return torch.as_tensor(
+                np.broadcast_to(DELTA, (1, spec.pred_horizon, 3)).copy())
+
+        def step_features(self, chunk):
+            return (chunk,)
+
+        def residual_step(self, feats, t, prop, wrench=None, message=None):
+            return torch.zeros(1, 3)
+
+    #: no stats at all means identity, so the stub's chunk *is* metres
+    norm = ChunkNormaliser(state={})
+    pol = DrimRunner(model=_Stub(), dyn=None, norm=norm, spec=spec, roi={},
+                     device="cpu", stage="D2")
+    pol.reset()
+    pos = np.float32([0.5, 0.1, 0.3])
+    obs = Observation(q=np.zeros(7, np.float32), dq=np.zeros(7, np.float32),
+                      ee_pos=pos, ee_quat=np.float32([0, 0, 0, 1]),
+                      ee_twist=np.zeros(6, np.float32),
+                      wrench=np.zeros(6, np.float32), images={},
+                      zigzag_action=np.zeros(6, np.float32), dt=0.07)
+    out = pol.step(obs)
+    assert np.allclose(out, pos + DELTA, atol=1e-6), (
+        f"expected pose+delta {pos + DELTA}, got {out} — the bare delta would "
+        f"be {DELTA}")
+
+
+def test_inference_reports_when_the_message_window_is_full():
+    """Before the window fills the message is null, and D2 is then exactly B1."""
+    from diffusion_policy.drim.infer import DrimRunner
+    spec = DrimSpec(prop_dim=7, act_dim=3, wrench_dim=0, cameras=(),
+                    pred_horizon=4, exec_horizon=2, message_window=5,
+                    fast_limits=(0.15,) * 3)
+    pol = DrimRunner(model=None, dyn=None, norm=None, spec=spec, roi={})
+    assert not pol.message_ready
+    pol._hist.extend([None] * 4)
+    assert not pol.message_ready
+    pol._hist.append(None)
+    assert pol.message_ready
+    pol.reset()
+    assert not pol.message_ready, "reset must not carry history across episodes"
