@@ -1,67 +1,95 @@
 #!/bin/bash
 # DRIM on the Cornell unicorn cluster.
 #
-#   sbatch drim_unicorn.sub                     # the whole ROI x vision sweep
-#   sbatch --array=0 drim_unicorn.sub           # one arm
-#   sbatch --export=ALL,BUDGET=standard drim_unicorn.sub
+#   sbatch --array=0 --export=ALL,SMOKE=1 -t 2:00:00 drim_unicorn.sub   # plumbing
+#   sbatch drim_unicorn.sub                                             # both arms
+#   sbatch --export=ALL,BUDGET=long drim_unicorn.sub
 #
 # Written locally because Claude Code cannot run on the login node; everything
 # that needs deciding is a variable at the top rather than something to work out
 # there.
 #
+#: Partition, in priority order. The cluster has three tiers over the same
+#: nodes: default_partition is PriorityTier=10, gpu is 15, and `bhattacharjee`
+#: is 20 and holds the group's own two nodes. A job in the default partition
+#: yields an *idle* node to any higher-tier queue, and every partition is
+#: PreemptMode=REQUEUE -- with no resume in drim.train, being preempted at hour
+#: six means starting over. Submitting here first is both faster and safer.
+#SBATCH -p bhattacharjee,gpu
 #SBATCH -J drim
 #SBATCH -o slurm/drim_%A_%a.out
 #SBATCH -e slurm/drim_%A_%a.err
 #SBATCH -N 1
 #SBATCH -n 1
 #SBATCH --cpus-per-task=8
-#SBATCH --mem=48G
+#: 128G, not the 48G this first asked for. The loader keeps every episode
+#: resident at the encoder's resolution (119 eps x 94,611 steps x 2 cameras x
+#: 240x320x3 = 40.6 GB) *and* the per-chunk two-frame copies (11,651 x 2 x 2 =
+#: 10.0 GB), and the episodes cannot be dropped after the chunks are built
+#: because the end-of-run rollout reads them. 50.6 GB steady state before torch.
+#SBATCH --mem=128G
 #SBATCH -t 12:00:00
 #SBATCH --requeue
 #SBATCH --get-user-env
 #SBATCH --gres=gpu:1
-#SBATCH --array=0-9
+#SBATCH --array=0-1
 
 set -euo pipefail
-export HYDRA_FULL_ERROR=1
 mkdir -p slurm
 
 # ---------------------------------------------------------------- the sweep
-# Five fields of view against two vision initialisations. The ROI is a flag
-# rather than something baked into the data, which is why the originals were
-# shipped rather than a preprocessed copy -- changing it here costs nothing.
-ROIS=(custom43 custom mid wide hand   custom43 custom mid wide hand)
-VIS=(  ""       ""     ""  ""   ""     IMAGENET1K_V1 IMAGENET1K_V1 IMAGENET1K_V1 IMAGENET1K_V1 IMAGENET1K_V1)
+# The field of view is settled: the hand-drawn box at the encoder's aspect,
+# resized to the 240x320 the encoder takes. It stays a flag rather than
+# something baked into the data -- that is why the originals were shipped
+# rather than a preprocessed copy -- but it is no longer swept.
+ROI=${ROI:-custom43}
+#: The one thing still being varied. 119 episodes is little enough that where
+#: the encoder starts from plausibly decides the run.
+VIS=(""  IMAGENET1K_V1)
 
 I=${SLURM_ARRAY_TASK_ID:-0}
-ROI=${ROIS[$I]}
 VISION=${VIS[$I]}
 BUDGET=${BUDGET:-standard}
 SEED=${SEED:-0}
+SMOKE=${SMOKE:-0}
 TAG="roi-${ROI}_vis-${VISION:-scratch}_b-${BUDGET}_s${SEED}"
+[ "$SMOKE" = 1 ] && TAG="smoke_${TAG}"
 
 # ---------------------------------------------------------------- paths
 REPO=${REPO:-$HOME/diffusion_policy}
+#: The interpreter. `conda activate` needs an interactive shell to have been
+#: initialised, which a batch script is not, so the env's python is named
+#: directly -- it puts the env's lib on the path by itself.
+PY=${PY:-$HOME/.conda/envs/dp_bw/bin/python}
+if [ ! -x "$PY" ]; then echo "no interpreter at $PY" >&2; exit 1; fi
 SHARE=/share/bhattacharjee/dlee_data/drim
 STAGE=/scratch/$USER/drim/datasets
 OUT=$SHARE/runs/$TAG
 
 echo "=== $(date) on $(hostname) ==="
-echo "  task $I   roi=$ROI   vision=${VISION:-random init}   budget=$BUDGET   seed=$SEED"
+echo "  task $I   roi=$ROI   vision=${VISION:-random init}   budget=$BUDGET   seed=$SEED   smoke=$SMOKE"
 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader | sed 's/^/  gpu: /'
 
 # ------------------------------------------------- stage /share -> /scratch
 # /share is NFS and shared with the whole group; training re-reads the dataset
 # every epoch, so it is copied to the node's local disk once. `-au` makes this
 # a no-op when the node already has it, which is what makes a repeated array
-# on the same node cheap.
+# on the same node cheap. The elapsed time printed here is the number that
+# decides whether a downscaled copy on /share is worth making.
 mkdir -p "$STAGE"
 echo "=== staging to $STAGE ==="
 T0=$SECONDS
-for D in zigzag_bed_0910.zarr zigzag_bed_0910_2.zarr zigzag_bed_0910_3.zarr zigzag_bed_0910_4.zarr; do
+#: The smoke is a plumbing check, and the data has already been verified
+#: array-by-array, so it stages one small store (5 episodes, 4.5 GB) rather
+#: than all 102 GB. That turns an 11.5-minute stage into ~35 seconds and the
+#: whole run into minutes, which is what makes it worth repeating.
+STORES="zigzag_bed_0910.zarr zigzag_bed_0910_2.zarr zigzag_bed_0910_3.zarr zigzag_bed_0910_4.zarr"
+[ "$SMOKE" = 1 ] && STORES="zigzag_bed_0910.zarr"
+for D in $STORES; do
     rsync -au --info=stats2 "$SHARE/datasets/$D" "$STAGE/" 2>&1 | tail -2 | sed 's/^/  /'
 done
 echo "  staged in $((SECONDS - T0)) s; $(du -sh $STAGE | cut -f1) on local disk"
+df -h "$STAGE" | tail -1 | sed 's/^/  scratch: /'
 
 # ---------------------------------------------------------------- train
 cd "$REPO"
@@ -70,10 +98,18 @@ mkdir -p "$OUT"
 
 # --data takes a directory and loads every .zarr inside, sorted, so the
 # episode order and therefore the seeded split are the same on every node.
-ARGS=(--data "$STAGE" --out "$OUT" --n-arms 1 --roi "$ROI"
+#: In smoke mode name the one store rather than the directory: a node that
+#: has already staged a full run keeps all four on /scratch, and --data on the
+#: directory would silently load all 102 GB again.
+DATA="$STAGE"
+[ "$SMOKE" = 1 ] && DATA="$STAGE/zigzag_bed_0910.zarr"
+ARGS=(--data "$DATA" --out "$OUT" --n-arms 1 --roi "$ROI"
       --budget "$BUDGET" --seed "$SEED" --device cuda:0)
 [ -n "$VISION" ] && ARGS+=(--vision-weights "$VISION")
+# --quick is 10/6/4/4 epochs: enough to exercise every stage and the exact-null
+# check on the real data, far too few to read as a result.
+[ "$SMOKE" = 1 ] && ARGS+=(--quick)
 
-srun ~/.conda/envs/robodiff/bin/python -u -m diffusion_policy.drim.train "${ARGS[@]}"
+srun "$PY" -u -m diffusion_policy.drim.train "${ARGS[@]}"
 
 echo "=== $(date) done: $OUT ==="
