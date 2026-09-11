@@ -85,6 +85,91 @@ python -m diffusion_policy.drim.train --data <path> --fast-frac 0.15 \
 pytest tests/test_drim.py          # 36 invariants, no data or GPU needed
 ```
 
+### Real-robot inference
+
+`real_robot.py` is the live adapter for a trained run.  It reads the same
+arm1 state and direct RealSense streams as `direct_realsense_joystick_collector`
+and sends the same Cartesian **velocity** command API.  Do not run the
+collector at the same time: both processes claim the two RealSense devices and
+would command arm1.
+
+Start the usual infrastructure first (the NUC panda server remains the socket
+endpoint for `FrankaRobotClient`):
+
+```bash
+roscore
+# in the NUC session: start panda_server
+cd ~/workspace/bimanual_ws/src/bimanual_dressing/scripts
+./run_teleop_background.sh --direct-realsense
+```
+
+Then, in an environment sourced with `devel/setup.bash`, first make an
+observation-only pass; it loads the checkpoint, checks all 27 proprioception
+and six wrench channels, and prints the target/delta without sending motion:
+
+```bash
+cd ~/workspace/bimanual_ws/src/bimanual_dressing/src/diffusion_policy
+python -m diffusion_policy.drim.real_robot \
+  --run /home/dressing/DATASET/drim_runs/roi-custom43_vis-scratch_b-standard_s0
+```
+
+Only after that passes, add `--execute`.  It requires a terminal confirmation;
+Ctrl-C or a robot-server error sends `stop` immediately.
+
+The deployed run is `delta_ee_pos`: `DrimRunner.step` returns
+`measured_ee_pos + predicted_delta`, which is the predicted **zigzag-free
+centroid**, not an EE pose target.  The adapter's default
+`--execution-mode centroid_servo` keeps its own centroid state, sends bounded
+`gain * (predicted_centroid - maintained_centroid)` base velocity, integrates
+that velocity into the maintained centroid, and then adds the separately
+scripted zigzag velocity around it. This preserves the collector's
+`centroid += joystick_velocity * dt` state structure without differentiating
+the policy's noisy per-step centroid predictions.  `centroid_velocity` is kept
+only as a diagnostic legacy mode; `position_p` directly tracks the measured EE
+and is also an experiment, not the default.
+The D2 transition history likewise receives this executed, integrated centroid
+(and the complete preceding velocity command), exactly matching the recorded
+`action` and `zigzag_action` fields.
+The dataset field named `zigzag_action` is the complete Cartesian velocity
+actually sent by the collector (centroid-motion velocity plus zigzag), despite
+its name.  The adapter therefore gives DRIM the previously executed complete
+command, while the zigzag term itself is never predicted.  `--no-zigzag` is an
+explicit ablation; do not use it for the checkpoint above, whose dynamics was
+trained with that conditioning input.
+
+To verify the physical primitive before attributing a failure to the policy,
+use `--zero-policy-output --execute`.  It holds the initial centroid for the
+runner history, masks all policy motion, and sends **only** the 0.07 m/s,
+0.05 m-amplitude position-reversing X zigzag.  It still prints `raw_target`,
+the unmasked policy result.  On the collector data, subtracting centroid
+velocity from the recorded full command recovers `-0.07` and `+0.07` m/s on X
+in equal proportions; this is the reference this ablation reproduces.
+
+`--policy-axis-mask 0 1 1` is the narrower version for this task: it gives the
+zigzag primitive sole ownership of X while preserving learned centroid motion
+on Y/Z.  A masked axis holds its initial centroid and contributes exactly zero
+policy velocity, so it cannot quietly oppose the primitive through the P
+tracker.
+
+### Verify the physical Y direction first
+
+Before using visual intuition to diagnose the policy, establish which physical
+direction arm1's base-frame Y represents on this particular rig.  The separate
+probe has no policy, camera, centroid, or zigzag component; it calls the same
+`FrankaRobotClient.set_ee_velocity([vx, vy, vz])` API as collection and live
+inference and permits only `[0, +Y, 0]` and `[0, -Y, 0]` commands:
+
+```bash
+python -m diffusion_policy.drim.axis_probe --execute
+```
+
+Keep the E-stop accessible.  The script starts at 2 mm/s (hard capped at
+5 mm/s), has a 250 ms keyboard watchdog, and calls `stop` on space, `q`,
+Ctrl-C, server error, or exit.  In its terminal, briefly hold `w` for `+Y`,
+then `s` for `-Y`; it displays the measured `ee_pos` at the same time.  This
+is a coordinate calibration only—do not run it together with the collector or
+policy process.
+
 ### Where the output goes
 
 Everything from a run lands in one directory — `--out`, or

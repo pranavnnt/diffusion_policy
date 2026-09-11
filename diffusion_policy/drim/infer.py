@@ -38,7 +38,7 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass, field
-from typing import Any, Dict, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
@@ -153,6 +153,12 @@ class DrimRunner:
     _msg: Optional[torch.Tensor] = None
     _k: int = 0
     _prev: Optional[tuple] = None
+    #: Unmasked target from the network's current step.  Useful for live
+    #: ablations that hold the robot on a fixed centroid while still showing
+    #: what the policy would have requested.
+    last_policy_target: Optional[np.ndarray] = None
+    last_replanned: bool = False
+    last_chunk_index: int = 0
 
     # ------------------------------------------------------------------ load
     @classmethod
@@ -217,6 +223,9 @@ class DrimRunner:
         self._chunk = self._feats = self._msg = None
         self._k = 0
         self._prev = None
+        self.last_policy_target = None
+        self.last_replanned = False
+        self.last_chunk_index = 0
 
     @property
     def message_ready(self) -> bool:
@@ -230,7 +239,10 @@ class DrimRunner:
 
     # ------------------------------------------------------------------ step
     @torch.no_grad()
-    def step(self, obs: Observation) -> np.ndarray:
+    def step(self, obs: Observation,
+             target_override: Optional[np.ndarray] = None,
+             target_transform: Optional[Callable[[np.ndarray], np.ndarray]] = None
+             ) -> np.ndarray:
         """One control step.  Returns the **absolute** EE position target, in metres.
 
         Replans every ``exec_horizon`` steps and applies the bounded corrector
@@ -261,12 +273,14 @@ class DrimRunner:
         self._push(prop, wr, frame)
         dyn_state = np.concatenate([prop, wr]) if sp.wrench_dim else prop
 
-        if self._k % sp.exec_horizon == 0:
+        self.last_replanned = (self._k % sp.exec_horizon == 0)
+        if self.last_replanned:
             ctx = self._context()
             self._msg = self._message()
             self._chunk = self.model.sample_chunk(ctx, self._msg, None)
             self._feats = self.model.step_features(self._chunk)
         idx = self._k % sp.exec_horizon
+        self.last_chunk_index = idx
 
         #: ``[1, D]``, the shape the corrector takes one step at a time — the
         #: normaliser is fitted on ``[N, E, D]`` and broadcasts over the batch
@@ -283,10 +297,56 @@ class DrimRunner:
         #: absolute pose, so the *measured* pose goes back on
         target = (delta + np.asarray(obs.ee_pos, np.float32)
                   if sp.action_mode == "delta_ee_pos" else delta)
+        self.last_policy_target = target.astype(np.float32, copy=True)
+        assert target_override is None or target_transform is None, (
+            "use either target_override or target_transform, not both")
+        if target_transform is not None:
+            target = np.asarray(target_transform(target.copy()), np.float32)
+            assert target.shape == (sp.act_dim,), (
+                f"target transform returned {target.shape}, expected {(sp.act_dim,)}")
+        if target_override is not None:
+            target = np.asarray(target_override, np.float32)
+            assert target.shape == (sp.act_dim,), (
+                f"target override is {target.shape}, expected {(sp.act_dim,)}")
 
         self._advance(dyn_state, target, exo, float(obs.dt))
         self._k += 1
         return target.astype(np.float32)
+
+    def replace_pending_action(self, action: np.ndarray) -> None:
+        """Replace this step's action before it enters the next history row.
+
+        Most deployments execute the predicted centroid directly, which is why
+        :meth:`step` records ``target`` by default.  A centroid-state servo,
+        however, deliberately sends an *integrated* centroid that can differ
+        from a noisy instantaneous prediction.  Training's ``hist_a`` is that
+        integrated collector centroid, so the servo must replace the pending
+        history action with its controller state before the next observation
+        closes the transition.
+        """
+        if self._prev is None:
+            raise RuntimeError("call replace_pending_action only after step()")
+        a = np.asarray(action, np.float32)
+        if a.shape != (self.spec.act_dim,):
+            raise ValueError(f"action is {a.shape}, expected {(self.spec.act_dim,)}")
+        y, _, exo, dt = self._prev
+        self._prev = (y, a.copy(), exo, dt)
+
+    def replace_pending_exo(self, exo: np.ndarray) -> None:
+        """Replace this step's executed exogenous command before history use.
+
+        The transition staged at observation ``t`` is closed when observation
+        ``t+1`` arrives, so it must carry the complete command actually sent at
+        ``t``.  A live controller only knows that command after it combines the
+        policy base velocity and zigzag primitive.
+        """
+        if self._prev is None:
+            raise RuntimeError("call replace_pending_exo only after step()")
+        x = np.asarray(exo, np.float32)
+        if x.shape != (self.spec.exo_dim,):
+            raise ValueError(f"exo is {x.shape}, expected {(self.spec.exo_dim,)}")
+        y, action, _, dt = self._prev
+        self._prev = (y, action, x.copy(), dt)
 
     # ------------------------------------------------------------------ inner
     def _push(self, prop, wr, frame) -> None:
@@ -353,7 +413,12 @@ class DrimRunner:
         what ``hist_a`` carried in training.
         """
         if self._prev is not None:
-            y0, a0, x0, d0 = self._prev
-            self._hist.append((y0, y, a0, np.float32([d0]), x0))
+            y0, a0, x0, _ = self._prev
+            # Dataset ``dt[t]`` is timestamp[t + 1] - timestamp[t], i.e. the
+            # duration of precisely the transition being closed here.  At live
+            # time that duration is only known when the next observation has
+            # arrived, so it is the *current* ``dt``, not the one staged with
+            # the previous state/action.
+            self._hist.append((y0, y, a0, np.float32([dt]), x0))
             del self._hist[:-self.spec.message_window]
         self._prev = (y, action, exo, dt)
