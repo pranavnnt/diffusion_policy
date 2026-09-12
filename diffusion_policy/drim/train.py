@@ -92,7 +92,7 @@ def run_name(prof: Dict[str, Any], epochs: Dict[str, int], a) -> str:
     roi = a.roi if a.profile == "dressing" else "none"
     vis = "scratch" if not a.vision_weights else str(a.vision_weights).lower()
     ep = "-".join(str(epochs[k]) for k in ("dyn", "B0", "B1", "D2"))
-    bits = [f"{len(cams)}cam", f"{hw[0]}x{hw[1]}", f"roi-{roi}",
+    bits = [f"{len(cams)}cam", f"{hw[0]}x{hw[1]}", f"roi-{roi}", f"aug-{a.aug}",
             str(prof.get("action_mode", "absolute")).replace("_", "-"),
             vis, f"e{ep}", f"s{a.seed}", time.strftime("%Y%m%d-%H%M%S")]
     if a.keep:
@@ -1104,6 +1104,11 @@ def main(argv=None) -> int:
                     help="a command injected at both teleop and inference that "
                          "the policy does not predict; it conditions the "
                          "dynamics. Empty to disable.")
+    ap.add_argument("--aug", default="0911", choices=sorted(DRESS.AUGMENTATIONS),
+                    help="which photometric augmentation to use. '0910' is the "
+                         "wide asymmetric range that bridges 0910-trained to "
+                         "0911-deployed; '0911' is the narrow symmetric one for "
+                         "a run whose data and deployment match.")
     ap.add_argument("--keep", default="",
                     help="comma-separated fields to put back into the "
                          "observation that the profile excludes, e.g. "
@@ -1151,7 +1156,8 @@ def main(argv=None) -> int:
                          "Channels the data never moves get 0. dap's own arms "
                          "sit at 0.016 (cap) and 0.16 (drawer).")
     a = ap.parse_args(argv)
-    prof = DRESS.profile(roi=a.roi) if a.profile == "dressing" else {}
+    prof = (DRESS.profile(roi=a.roi, aug=a.aug) if a.profile == "dressing"
+            else {})
     if a.cameras is not None:
         prof["cameras"] = tuple(c for c in a.cameras.split(",") if c)
     if a.action_mode is not None:

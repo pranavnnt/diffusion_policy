@@ -286,8 +286,32 @@ ROI = ROI_CUSTOM_0911_2
 #: for: brightness and contrast move all three channels together, daylight
 #: moves them apart. In 0910 the red channel sits ~10 below green and blue by a
 #: margin that tracks the level.
-PHOTOMETRIC = dict(brightness=(0.55, 1.25), contrast=0.3, saturation=0.3,
-                   channel_gain=0.12)
+PHOTOMETRIC_0910 = dict(brightness=(0.55, 1.25), contrast=0.3, saturation=0.3,
+                        channel_gain=0.12)
+
+#: For a run trained on the 0911 recordings, where there is no gap to close.
+#:
+#: Those were made behind the curtains at a fixed exposure and the robot runs
+#: under the same conditions, so augmentation is insurance against future drift
+#: rather than a bridge across a measured shift.  Between episodes the level
+#: moves over x[0.95, 1.06] (0910 spans x[0.83, 1.55]) and the channel
+#: separation varies with std 0.011 on the front camera against 0910's 0.029.
+#:
+#: +/-0.15 is about three times the observed spread — enough that brightness
+#: cannot identify an episode, which is what the augmentation has to prevent,
+#: without the wide range that would be wasted here.  Symmetric, because unlike
+#: the 0910 pairing there is no known direction to the drift.  ``channel_gain``
+#: drops with it: the window is what made the channels move apart, and it is
+#: behind a curtain now.
+PHOTOMETRIC_0911 = dict(brightness=0.15, contrast=0.2, saturation=0.2,
+                        channel_gain=0.06)
+
+AUGMENTATIONS: Dict[str, Dict[str, Any]] = {
+    "0910": PHOTOMETRIC_0910, "0911": PHOTOMETRIC_0911, "none": {},
+}
+#: The default names the pairing it was measured for, so a run on other data
+#: has to say which it wants rather than inheriting one silently.
+PHOTOMETRIC = PHOTOMETRIC_0911
 
 #: Channels left out of the observation although the rig records them.
 #:
@@ -328,16 +352,18 @@ def arm_act_channels(arm_ids: Sequence[int], per_arm: int = ACT_PER_ARM
 
 
 def profile(cameras: Optional[Sequence[str]] = None,
-            roi: str = "custom") -> Dict[str, Any]:
+            roi: str = "custom", aug: str = "0911") -> Dict[str, Any]:
     """Defaults a dressing run starts from.  ``--profile none`` skips all of it."""
     if roi not in ROIS:
         raise KeyError(f"unknown roi {roi!r}; have {sorted(ROIS)}")
+    if aug not in AUGMENTATIONS:
+        raise KeyError(f"unknown aug {aug!r}; have {sorted(AUGMENTATIONS)}")
     return {
         "layout": PACKED_STATE,
         "cameras": tuple(CAMERAS_0909 if cameras is None else cameras),
         "image_size": IMAGE_SIZE,
         "roi": ROIS[roi],
-        "photometric": PHOTOMETRIC,
+        "photometric": AUGMENTATIONS[aug],
         "action_mode": "delta_action",
         "exo_key": "zigzag_action",
         "exclude": EXCLUDE,
