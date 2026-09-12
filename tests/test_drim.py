@@ -1479,3 +1479,100 @@ def test_delta_action_is_the_centroids_own_displacement(tmp_path):
     #: with target[0] == 0 the copycat and the do-nothing baseline are the same
     b = trivial_action_baselines(tr, spec)
     assert b["repeat_first_action"] == pytest.approx(b["predict_zero"])
+
+
+# --------------------------------------------------------------------------- #
+# 20. D10 = R + S + U
+# --------------------------------------------------------------------------- #
+
+
+def _d10(spec, s_width=6):
+    b1 = PL.build("B1", spec, core=PL.build("B0", spec))
+    return PL.build("D10", spec, core=b1, message_in_dims=(s_width, s_width))
+
+
+def test_d10_widens_the_encoder_by_exactly_the_raw_state():
+    """R's columns go first in each slot, proprioception with S, contact with U.
+
+    The widths are the claim: if the raw channel did not actually reach the
+    encoder, every number D10 produces would be D2's with a different label.
+    """
+    spec = tiny_spec()
+    d2, d10 = (PL.build("D2", spec, core=PL.build("B1", spec, core=PL.build("B0", spec)),
+                        message_in_dims=(6, 6)),
+               _d10(spec))
+    assert d2.message_in_dims == (6, 6)
+    assert d10.message_in_dims == (6 + spec.prop_dim, 6 + spec.wrench_dim)
+
+
+def test_d10_with_null_message_is_b1_exactly():
+    """Same identity as D2's, and it has to be checked separately.
+
+    D10 reaches the encoder through a different path — three channels
+    concatenated rather than two — so D2 passing says nothing about it.
+    """
+    spec = tiny_spec()
+    d10 = _d10(spec)
+    with torch.no_grad():
+        for p in d10.dv.parameters():
+            p.add_(torch.randn_like(p) * 0.1)
+        d10.gate.fill_(2.5)
+        d10.reconcile_gate.fill_(2.5)
+    b = batch(spec)
+    ctx = d10.context(None, b["prop2"])
+    noise = torch.zeros(len(b["target"]), d10.horizon, d10.act_dim)
+    zero = torch.zeros(len(b["target"]), d10.cond_dim)
+    with torch.no_grad():
+        via_null = d10.sample_chunk(ctx, zero, noise)
+        dv, d10.dv = d10.dv, None
+        via_b1 = d10.sample_chunk(ctx, None, noise)
+        d10.dv = dv
+    assert torch.equal(via_null, via_b1), (
+        "D10 at m=0 diverged from B1; the gated route is no longer exactly null")
+
+
+def test_d10_reads_the_raw_state_and_the_mask_covers_it():
+    """``msg_valid`` has to zero the message D10 builds, R included.
+
+    The mask that carries the guarantee is the one on the encoder's *output* in
+    ``conditioning``: zeroing the inputs would not do it, because the encoder
+    has biases and ``encoder(0, 0)`` is not zero. Without a full causal window
+    there is no surprise to send, and the structural null is what makes D10
+    *be* B1 at those steps rather than approximate it — so if D10's wider input
+    escaped that mask, the message would be non-zero where B1's is zero and the
+    comparison between them would no longer be confined to the continuation.
+    """
+    spec = tiny_spec()
+    d10 = _d10(spec)
+    n, W = 4, spec.message_window
+    dd = 6
+    m = dict(prop2=torch.zeros(n, 1),
+             hist_S=torch.randn(n, W, dd), hist_U=torch.randn(n, W, dd),
+             hist_R=torch.randn(n, W, spec.prop_dim + spec.wrench_dim))
+
+    #: R reaches the encoder: changing it alone changes the message
+    with torch.no_grad():
+        a = d10.raw_conditioning(m)
+        b = d10.raw_conditioning({**m, "hist_R": m["hist_R"] + 1.0})
+    assert not torch.allclose(a, b), "hist_R does not reach the encoder"
+
+    #: and the mask covers all three
+    with torch.no_grad():
+        masked = d10.conditioning({**m, "msg_valid": torch.zeros(n)})
+    assert torch.equal(masked, torch.zeros_like(masked)), (
+        "msg_valid did not zero the message; R escaped the structural null")
+
+
+def test_d10_and_d2_share_every_hyperparameter():
+    """The two differ in what the encoder reads and in nothing else.
+
+    Anything else that moved between them would make ``D10 - D2`` a statement
+    about two training recipes rather than about the channels.
+    """
+    import inspect
+    from diffusion_policy.drim import train as T
+    src = inspect.getsource(T.train_d2)
+    assert "variant" in inspect.signature(T.train_d2).parameters
+    #: one construction site, one optimiser, one schedule
+    assert src.count("PL.build(") == 1 and src.count("AdamW") == 1
+    assert T.BUDGETS["standard"]["D2"] == T.BUDGETS["standard"]["D10"]

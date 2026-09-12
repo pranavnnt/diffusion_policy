@@ -38,7 +38,7 @@ from diffusion_policy.drim import nets as N
 from diffusion_policy.drim.augment import PhotometricJitter
 from diffusion_policy.drim.spec import DrimSpec
 
-VARIANTS = ("B0", "B1", "D2")
+VARIANTS = ("B0", "B1", "D2", "D10")
 PARENT = {"B0": None, "B1": "B0", "D2": "B1"}
 
 
@@ -138,12 +138,22 @@ class DrimPolicy(nn.Module):
         # -- message --------------------------------------------------------
         self.encoder = self.dv = self.reconcile = None
         self.cond_dim = 0
-        if variant == "D2":
+        if variant in ("D2", "D10"):
             if message_in_dims is None:
                 raise ValueError(
-                    "D2 needs message_in_dims=(S_width, U_width); they are the "
-                    "delta width of the dynamics model the channels come from")
+                    f"{variant} needs message_in_dims=(S_width, U_width); they "
+                    f"are the delta width of the dynamics model the channels "
+                    f"come from")
             s_dim, u_dim = message_in_dims
+            #: ``D10`` is ``R + S + U``: the raw state window joins the two
+            #: surprise channels, packed with R's columns **first** in each slot
+            #: so the layout matches dap's
+            #: ``[obs | S]`` / ``[wrench | U]``.  Proprioception rides with S and
+            #: the contact channels with U, which keeps each slot carrying one
+            #: kind of quantity.
+            if variant == "D10":
+                s_dim += spec.prop_dim
+                u_dim += spec.wrench_dim
             self.message_in_dims = (int(s_dim), int(u_dim))
             #: Same class, same message dimension, same gated route as dap's
             #: ``B2_OBS`` — only the encoder's *inputs* change, ``S`` where the
@@ -166,7 +176,7 @@ class DrimPolicy(nn.Module):
             if self.vision is not None:
                 for p in self.vision.parameters():
                     p.requires_grad_(False)
-            if self.fast is not None and variant == "D2":
+            if self.fast is not None and variant in ("D2", "D10"):
                 for p in self.fast.parameters():
                     p.requires_grad_(False)
 
@@ -204,7 +214,16 @@ class DrimPolicy(nn.Module):
     # ------------------------------------------------------------------ message
 
     def raw_conditioning(self, batch) -> torch.Tensor:
-        return self.encoder(batch["hist_S"], batch["hist_U"])
+        a, b = batch["hist_S"], batch["hist_U"]
+        if self.variant == "D10":
+            #: ``hist_R`` is the raw dynamics state over the same window,
+            #: normalised by the dynamics' own statistics — raw metres next to a
+            #: clipped surprise and a log-sigma is not something one MLP can be
+            #: asked to weigh.
+            r = batch["hist_R"]
+            a = torch.cat([r[..., :self.spec.prop_dim], a], dim=-1)
+            b = torch.cat([r[..., self.spec.prop_dim:], b], dim=-1)
+        return self.encoder(a, b)
 
     def conditioning(self, batch, donor_cond: Optional[torch.Tensor] = None,
                      force_null: bool = False) -> torch.Tensor:

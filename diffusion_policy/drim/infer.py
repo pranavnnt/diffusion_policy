@@ -83,13 +83,26 @@ class Observation:
     centroid: Optional[np.ndarray] = None
 
     def prop(self, spec: DrimSpec) -> np.ndarray:
+        tw = np.asarray(self.ee_twist, np.float32).ravel()
+        #: ``ee_lin_vel`` and ``ee_ang_vel`` are the two halves of the recorded
+        #: twist. The rig publishes only the combined 6-vector, and the loader
+        #: carves the linear half out of it when the angular half is excluded —
+        #: which it is by default, being identically zero on every step. This
+        #: has to offer the same three spellings or a checkpoint trained that
+        #: way cannot be fed.
         parts = {"q": self.q, "dq": self.dq, "ee_pos": self.ee_pos,
-                 "ee_quat": self.ee_quat, "ee_twist": self.ee_twist}
+                 "ee_quat": self.ee_quat, "ee_twist": tw,
+                 "ee_lin_vel": tw[:3], "ee_ang_vel": tw[3:]}
+        missing = [f for f in spec.prop_fields if f not in parts]
+        assert not missing, (
+            f"the checkpoint's state vector needs {missing}, which this "
+            f"Observation does not carry; it has {sorted(parts)}")
         return np.concatenate([np.asarray(parts[f], np.float32).ravel()
                                for f in spec.prop_fields])
 
     def wrench_vec(self, spec: DrimSpec) -> np.ndarray:
-        parts = {"wrench": self.wrench}
+        w = np.asarray(self.wrench, np.float32).ravel()
+        parts = {"wrench": w, "ee_force": w[:3]}
         if not spec.wrench_fields:
             return np.zeros(0, np.float32)
         return np.concatenate([np.asarray(parts[f], np.float32).ravel()

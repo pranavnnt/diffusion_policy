@@ -55,7 +55,11 @@ N_NOMINAL_DRAWS_VALID = 2
 W_ACTION = 1.0
 NOISE_SEED = 909
 
-STAGES = ("dyn", "B0", "B1", "D2")
+#: ``D10`` nests on the same frozen ``B1`` as ``D2`` and is trained in the same
+#: run on purpose: the two then differ in exactly one thing, what the message
+#: carries, and ``D10 - D2`` is a statement about channels rather than about two
+#: parents that happened to converge differently.
+STAGES = ("dyn", "B0", "B1", "D2", "D10")
 
 #: Epoch budgets. ``B0``/``B1`` are deliberately light and ``D2`` heavy: the
 #: first two are the baseline machinery, the third is the thing under study, and
@@ -91,7 +95,8 @@ def run_name(prof: Dict[str, Any], epochs: Dict[str, int], a) -> str:
     hw = prof.get("image_size") or (0, 0)
     roi = a.roi if a.profile == "dressing" else "none"
     vis = "scratch" if not a.vision_weights else str(a.vision_weights).lower()
-    ep = "-".join(str(epochs[k]) for k in ("dyn", "B0", "B1", "D2"))
+    ep = "-".join(str(epochs[k]) for k in ("dyn", "B0", "B1", "D2", "D10")
+                  if k in epochs)
     gen = os.path.basename(str(a.data).rstrip("/").split(",")[0])
     gen = gen.replace(".zarr", "") or "data"
     bits = [gen, f"{len(cams)}cam", f"{hw[0]}x{hw[1]}", f"roi-{roi}", f"aug-{a.aug}",
@@ -129,9 +134,9 @@ def _parse_frac(given: str, profile_default=None):
 
 
 BUDGETS: Dict[str, Dict[str, int]] = {
-    "fast":     {"dyn": 40, "B0": 30, "B1": 20, "D2": 60},
-    "standard": {"dyn": 60, "B0": 60, "B1": 30, "D2": 200},
-    "long":     {"dyn": 100, "B0": 100, "B1": 50, "D2": 400},
+    "fast":     {"dyn": 40, "B0": 30, "B1": 20, "D2": 60, "D10": 60},
+    "standard": {"dyn": 60, "B0": 60, "B1": 30, "D2": 200, "D10": 200},
+    "long":     {"dyn": 100, "B0": 100, "B1": 50, "D2": 400, "D10": 400},
 }
 
 
@@ -342,6 +347,19 @@ def attach_su(d: Dict[str, np.ndarray], frozen: DY.FrozenDynamics,
     mv = d["msg_valid"][:, None, None]
     out["hist_S"] = ch["S"].cpu().numpy().astype(np.float32) * mv
     out["hist_U"] = ch["U"].cpu().numpy().astype(np.float32) * mv
+    #: ``R`` for D10 — the same window of raw dynamics state the surprise was
+    #: computed from, normalised by the dynamics' own statistics so that a metre
+    #: and a clipped surprise arrive at the encoder on comparable scales.
+    #:
+    #: Masked like ``S`` and ``U`` for consistency, not because the identity
+    #: needs it: what makes the null structural is
+    #: :meth:`~diffusion_policy.drim.policy.DrimPolicy.conditioning` multiplying
+    #: the encoder's *output* by ``msg_valid``. Zeroing the inputs would not be
+    #: enough on its own — the encoder has biases, so ``encoder(0, 0)`` is not
+    #: zero. The mask here keeps a step with no causal window from carrying
+    #: numbers that mean nothing.
+    out["hist_R"] = frozen.norm.y(
+        np.asarray(d["hist_y"], np.float32)).astype(np.float32) * mv
     return out
 
 
@@ -601,7 +619,8 @@ def train_b1(b0, spec, tr, va, seed, epochs, device, log) -> Dict[str, Any]:
 
 def _message(model, b):
     return model.conditioning({"prop2": b["prop2"], "msg_valid": b["msg_valid"],
-                               "hist_S": b["hist_S"], "hist_U": b["hist_U"]})
+                               "hist_S": b["hist_S"], "hist_U": b["hist_U"],
+                               "hist_R": b.get("hist_R")})
 
 
 def _cond_losses(model, b, noise):
@@ -630,10 +649,17 @@ def _valid_cond(model, va, noise_va, device, batch=64) -> float:
     return tot / max(n, 1.0)
 
 
-def train_d2(b1, spec, tr, va, seed, epochs, device, message_in_dims, log
-             ) -> Dict[str, Any]:
+def train_d2(b1, spec, tr, va, seed, epochs, device, message_in_dims, log,
+             variant: str = "D2") -> Dict[str, Any]:
+    """Train a conditioned stage on a frozen ``B1``.
+
+    ``D2`` and ``D10`` share this function and every hyper-parameter in it. The
+    only difference between them is what ``raw_conditioning`` reads, which is
+    the whole point: ``D10 - D2`` then measures the channels rather than two
+    training recipes.
+    """
     torch.manual_seed(seed + 2000)
-    model = PL.build("D2", spec, core=b1, message_in_dims=message_in_dims,
+    model = PL.build(variant, spec, core=b1, message_in_dims=message_in_dims,
                      freeze_base=True).to(device)
     params = [p for p in model.parameters() if p.requires_grad]
     opt = torch.optim.AdamW(params, lr=LR_COND, weight_decay=WEIGHT_DECAY)
@@ -664,7 +690,7 @@ def train_d2(b1, spec, tr, va, seed, epochs, device, message_in_dims, log
         gn = model.gate_norms()
         if bank.observe(model, ep + 1, val_loss=vl, action_mse=am,
                         train_loss=tot / n, **gn):
-            log(f"      s{seed}/D2 epoch {ep + 1}/{epochs} train={tot / n:.5f} "
+            log(f"      s{seed}/{variant} epoch {ep + 1}/{epochs} train={tot / n:.5f} "
                 f"val={vl:.5f} act_mse={am:.5f} gate={gn['gate']:.4f} "
                 f"rgate={gn['reconcile_gate']:.4f} [snapshot]")
     return {"model": model, "bank": bank, "gate_norms": model.gate_norms(),
@@ -736,7 +762,8 @@ def run(zarr_path: Any, out_dir: str, seed: int = 0,
     assert not unknown, f"unknown stage(s) {unknown}; have {STAGES}"
     #: Each stage nests on the trained parent held in memory, so a run cannot
     #: start in the middle. Saying so here beats a KeyError three stages later.
-    for child, parent in (("B1", "B0"), ("D2", "B1"), ("D2", "dyn")):
+    for child, parent in (("B1", "B0"), ("D2", "B1"), ("D2", "dyn"),
+                          ("D10", "B1"), ("D10", "dyn")):
         assert not (child in stages and parent not in stages), (
             f"stage {child} nests on {parent}, which is not in {list(stages)}")
     #: (superseded by BUDGETS below; kept as the floor when nothing is passed)
@@ -861,7 +888,7 @@ def run(zarr_path: Any, out_dir: str, seed: int = 0,
         "normaliser": norm.state_dict()}
 
     frozen = None
-    if "dyn" in stages or "D2" in stages:
+    if "dyn" in stages or "D2" in stages or "D10" in stages:
         log(f"[stage] dyn  (state = {spec.dyn_dim}d: prop {spec.prop_dim} + "
             f"contact {spec.wrench_dim})")
         mods = F.modalities(res, spec.dyn_fields)
@@ -963,24 +990,29 @@ def run(zarr_path: Any, out_dir: str, seed: int = 0,
         models["B1"] = r.pop("model")
         summary["B1"] = _save("B1", r)
 
-    if "D2" in stages:
-        log("[stage] D2")
+    for cond in ("D2", "D10"):
+        if cond not in stages:
+            continue
+        log(f"[stage] {cond}")
         dd = summary["dyn"]["delta_dim"]
-        r = train_d2(models["B1"], spec, t_tr, t_va, seed, epochs["D2"], device,
-                     (dd, dd), log)
-        models["D2"] = r.pop("model")
+        #: both nest on the *same* frozen B1 object, so the comparison between
+        #: them is confined to the message
+        r = train_d2(models["B1"], spec, t_tr, t_va, seed, epochs[cond], device,
+                     (dd, dd), log, variant=cond)
+        models[cond] = r.pop("model")
         b = _batch(t_va, slice(0, min(8, len(va["target"]))), device)
-        null = check_exact_null(models["D2"], b)
-        log(f"      exact-null check: max|D2(m=0) - B1| = "
+        null = check_exact_null(models[cond], b)
+        log(f"      exact-null check: max|{cond}(m=0) - B1| = "
             f"{null['max_abs_diff']:.3e}  {'PASS' if null['passed'] else 'FAIL'}")
-        summary["D2"] = {**_save("D2", r), "exact_null": null}
+        summary[cond] = {**_save(cond, r), "exact_null": null}
 
     #: Everything below runs on the *trained* models and never feeds back into
     #: them: it is what to read before the policy reaches the robot, not another
     #: selector.
     if diagnose and frozen is not None and models:
         log("[stage] diagnostics")
-        last = models.get("D2") or models.get("B1") or models.get("B0")
+        last = (models.get("D10") or models.get("D2")
+                or models.get("B1") or models.get("B0"))
         mods = F.modalities(res, spec.dyn_fields)
         va_eps = sorted({int(i) for i in va["episode_index"]})
         #: the episodes D2's message was actually conditioned on, which is what
@@ -997,12 +1029,13 @@ def run(zarr_path: Any, out_dir: str, seed: int = 0,
             log(f"      diagnostics failed: {type(exc).__name__}: {exc}")
             diag["error"] = f"{type(exc).__name__}: {exc}"
         b = _batch(t_va, slice(0, min(32, len(va["target"]))), device)
-        if "D2" in models:
+        if "D2" in models or "D10" in models:
             diag["message_reliance"] = DG.message_reliance(
-                models["D2"], b, _message)
+                models.get("D10") or models["D2"], b, _message)
         if spec.is_image:
             diag["illumination"] = DG.illumination_sensitivity(
-                last, b, _message if "D2" in models else None)
+                last, b,
+                _message if ("D2" in models or "D10" in models) else None)
             il = diag["illumination"]
             if il:
                 log(f"      lighting shift: brighter {il['brighter']:.4f} "
@@ -1128,6 +1161,7 @@ def main(argv=None) -> int:
     ap.add_argument("--epochs-b0", type=int, default=None)
     ap.add_argument("--epochs-b1", type=int, default=None)
     ap.add_argument("--epochs-d2", type=int, default=None)
+    ap.add_argument("--epochs-d10", type=int, default=None)
     ap.add_argument("--vision-weights", default=None,
                     help="resnet18 initialisation. None (default, matching "
                          "dap) trains it from scratch; IMAGENET1K_V1 starts "
@@ -1179,7 +1213,8 @@ def main(argv=None) -> int:
         prof["layout"] = LAYOUTS[a.layout]
     ep = dict(BUDGETS[a.budget])
     for k, v in (("dyn", a.epochs_dyn), ("B0", a.epochs_b0),
-                 ("B1", a.epochs_b1), ("D2", a.epochs_d2)):
+                 ("B1", a.epochs_b1), ("D2", a.epochs_d2),
+                 ("D10", a.epochs_d10)):
         if v is not None:
             ep[k] = v
     out = a.out or os.path.join(a.out_root or os.path.join("data", "outputs"),
@@ -1188,7 +1223,7 @@ def main(argv=None) -> int:
         #: Enough to exercise every stage and the exact-null check; far too few
         #: to mean anything, which is the point of a separate flag rather than a
         #: quietly small default.
-        ep = {"dyn": 10, "B0": 6, "B1": 4, "D2": 4}
+        ep = {"dyn": 10, "B0": 6, "B1": 4, "D2": 4, "D10": 4}
     run([p for p in a.data.split(",") if p], out, seed=a.seed,
         device=a.device,
         stages=tuple(a.stages.split(",")), val_ratio=a.val_ratio,

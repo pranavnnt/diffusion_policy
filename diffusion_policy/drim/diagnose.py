@@ -534,11 +534,31 @@ def detectors(summary: Dict[str, Any]) -> List[str]:
                    + ("  <-- never reaches its ceiling; authority unused"
                       if b1 < 0.001 else
                       "  <-- pinned; authority too small" if b1 > 0.5 else ""))
-    d2 = summary.get("D2") or {}
-    if "exact_null" in d2:
-        ok = d2["exact_null"]["passed"]
+    #: every conditioned stage gets its own line: the identity is what makes
+    #: each of them a measurable claim against B1, so one passing says nothing
+    #: about another
+    for cond in ("D2", "D10"):
+        d = summary.get(cond) or {}
+        if "exact_null" not in d:
+            continue
+        ok = d["exact_null"]["passed"]
         out.append(f"{'OK  ' if ok else 'FAIL'} exact-null identity "
-                   f"(max |D2(m=0) - B1| = {d2['exact_null']['max_abs_diff']:.1e})")
+                   f"(max |{cond}(m=0) - B1| = "
+                   f"{d['exact_null']['max_abs_diff']:.1e})")
+    def _picked(stage, key="action_mse"):
+        """``key`` at the epoch that stage's checkpoint was built from."""
+        st = summary.get(stage) or {}
+        eps = ((st.get("selection") or {}).get("selected_epochs") or [])
+        rows = {r["epoch"]: r for r in (st.get("curve") or []) if key in r}
+        vals = [rows[e][key] for e in eps if e in rows]
+        return sum(vals) / len(vals) if vals else None
+
+    #: and where both were trained, the comparison they exist for
+    a, b = _picked("D2"), _picked("D10")
+    if a and b:
+        out.append(f"{'OK  ' if b < a else 'note'} D10 - D2 = {b - a:+.6f} "
+                   f"({(a - b) / max(a, 1e-12):+.1%} on action_mse)  "
+                   f"<-- what the raw channel adds to surprise alone")
     sh = (summary.get("diagnostics") or {}).get("surprise_shift") or {}
     if "p99_ratio" in sh:
         r = sh["p99_ratio"]
