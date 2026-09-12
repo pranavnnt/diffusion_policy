@@ -92,7 +92,9 @@ def run_name(prof: Dict[str, Any], epochs: Dict[str, int], a) -> str:
     roi = a.roi if a.profile == "dressing" else "none"
     vis = "scratch" if not a.vision_weights else str(a.vision_weights).lower()
     ep = "-".join(str(epochs[k]) for k in ("dyn", "B0", "B1", "D2"))
-    bits = [f"{len(cams)}cam", f"{hw[0]}x{hw[1]}", f"roi-{roi}", f"aug-{a.aug}",
+    gen = os.path.basename(str(a.data).rstrip("/").split(",")[0])
+    gen = gen.replace(".zarr", "") or "data"
+    bits = [gen, f"{len(cams)}cam", f"{hw[0]}x{hw[1]}", f"roi-{roi}", f"aug-{a.aug}",
             str(prof.get("action_mode", "absolute")).replace("_", "-"),
             vis, f"e{ep}", f"s{a.seed}", time.strftime("%Y%m%d-%H%M%S")]
     if a.keep:
@@ -1050,6 +1052,11 @@ def main(argv=None) -> int:
     ap.add_argument("--data", "--zarr", dest="data", required=True,
                     help="a .zarr store, a directory containing several, or a "
                          "comma-separated list of either")
+    ap.add_argument("--out-root", default=None,
+                    help="put the generated run directory under this path. "
+                         "Use it instead of --out when the caller decides "
+                         "*where* and this module decides *what it is called* — "
+                         "a hand-made tag cannot keep up with what is varied.")
     ap.add_argument("--out", default=None,
                     help="run directory; defaults to "
                          "data/outputs/drim_<timestamp>")
@@ -1175,7 +1182,8 @@ def main(argv=None) -> int:
                  ("B1", a.epochs_b1), ("D2", a.epochs_d2)):
         if v is not None:
             ep[k] = v
-    out = a.out or os.path.join("data", "outputs", run_name(prof, ep, a))
+    out = a.out or os.path.join(a.out_root or os.path.join("data", "outputs"),
+                                run_name(prof, ep, a))
     if a.quick:
         #: Enough to exercise every stage and the exact-null check; far too few
         #: to mean anything, which is the point of a separate flag rather than a

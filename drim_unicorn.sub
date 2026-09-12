@@ -63,9 +63,6 @@ CAMERAS=${CAMERAS:-${CAMS[$I]}}
 BUDGET=${BUDGET:-standard}
 SEED=${SEED:-0}
 SMOKE=${SMOKE:-0}
-TAG="$(basename $SHARE_DATA)_${NCAM[$I]}cam_roi-${ROI}_aug-${AUG}_b-${BUDGET}_s${SEED}"
-[ "$SMOKE" = 1 ] && TAG="smoke_${TAG}"
-
 # ---------------------------------------------------------------- paths
 REPO=${REPO:-$HOME/diffusion_policy}
 #: The interpreter. `conda activate` needs an interactive shell to have been
@@ -74,7 +71,7 @@ REPO=${REPO:-$HOME/diffusion_policy}
 PY=${PY:-$HOME/.conda/envs/dp_bw/bin/python}
 if [ ! -x "$PY" ]; then echo "no interpreter at $PY" >&2; exit 1; fi
 STAGE=/scratch/$USER/drim/$(basename "$SHARE_DATA")
-OUT=$SHARE/runs/$TAG
+OUT_ROOT=$SHARE/runs
 
 echo "=== $(date) on $(hostname) ==="
 echo "  task $I   data=$(basename $SHARE_DATA)   cameras=$CAMERAS   roi=$ROI   aug=$AUG   budget=$BUDGET   seed=$SEED   smoke=$SMOKE"
@@ -104,8 +101,8 @@ df -h "$STAGE" | tail -1 | sed 's/^/  scratch: /'
 
 # ---------------------------------------------------------------- train
 cd "$REPO"
-echo "=== training -> $OUT ==="
-mkdir -p "$OUT"
+echo "=== training -> $OUT_ROOT/<generated name> ==="
+mkdir -p "$OUT_ROOT"
 
 # --data takes a directory and loads every .zarr inside, sorted, so the
 # episode order and therefore the seeded split are the same on every node.
@@ -119,7 +116,7 @@ DATA="$STAGE"
 #: hand-made tag cannot keep in step with.
 ARGS=(--data "$DATA" --n-arms 1 --roi "$ROI" --cameras "$CAMERAS" --aug "$AUG"
       --budget "$BUDGET" --seed "$SEED" --device cuda:0
-      --out "$OUT")
+      --out-root "$OUT_ROOT")
 [ -n "$VISION" ] && ARGS+=(--vision-weights "$VISION")
 # --quick is 10/6/4/4 epochs: enough to exercise every stage and the exact-null
 # check on the real data, far too few to read as a result.
@@ -127,4 +124,4 @@ ARGS=(--data "$DATA" --n-arms 1 --roi "$ROI" --cameras "$CAMERAS" --aug "$AUG"
 
 srun "$PY" -u -m diffusion_policy.drim.train "${ARGS[@]}"
 
-echo "=== $(date) done: $OUT ==="
+echo "=== $(date) done; newest run: $(ls -1dt $OUT_ROOT/*/ | head -1) ==="
