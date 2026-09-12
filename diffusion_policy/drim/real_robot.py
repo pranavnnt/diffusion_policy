@@ -412,16 +412,25 @@ def main() -> int:
               "opposite way on y and z, so a servo driven by it moves the arm "
               "backwards on the axis that carries the task. delta_action "
               "checkpoints do not have this problem.", flush=True)
-    if tuple(sp.cameras) != ("image_bed_front", "image_bed_back"):
-        raise RuntimeError(f"unexpected camera contract {sp.cameras}")
+    #: Open the cameras the *checkpoint* names, not a fixed pair. A one-camera
+    #: run is a deliberate ablation — whether the bed-back view earns its place
+    #: is one of the questions being asked — and hardcoding two here would mean
+    #: the answer could never be deployed. Anything named without a serial is
+    #: refused rather than skipped: a missing view is not a degraded run, it is
+    #: a different observation than the one that was trained on.
+    SERIALS = {"image_bed_front": a.front_serial, "image_bed_back": a.back_serial}
+    unknown = [c for c in sp.cameras if c not in SERIALS]
+    if unknown:
+        raise RuntimeError(
+            f"the checkpoint needs camera(s) {unknown}, which this adapter has "
+            f"no serial for; it knows {sorted(SERIALS)}")
     if sp.act_dim != 3 or sp.exo_dim != 6:
         raise RuntimeError(f"expected 3-D target and 6-D zigzag, got {sp.act_dim}/{sp.exo_dim}")
 
     robot = FrankaRobotClient(robot_name="arm1")
-    cameras = {
-        "image_bed_front": DirectRealSenseCamera("image_bed_front", a.front_serial, 640, 480, a.camera_fps),
-        "image_bed_back": DirectRealSenseCamera("image_bed_back", a.back_serial, 640, 480, a.camera_fps),
-    }
+    cameras = {c: DirectRealSenseCamera(c, SERIALS[c], 640, 480, a.camera_fps)
+               for c in sp.cameras}
+    print(f"cameras from the checkpoint: {list(sp.cameras)}", flush=True)
     for cam in cameras.values():
         cam.start()
     try:
