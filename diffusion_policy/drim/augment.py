@@ -37,6 +37,7 @@ from __future__ import annotations
 
 from typing import Optional, Sequence
 
+import numpy as np
 import torch
 import torch.nn as nn
 
@@ -56,12 +57,21 @@ class PhotometricJitter(nn.Module):
     ``channel_gain`` is the one aimed at daylight. Brightness and contrast move
     all three channels together; a window moves them apart, and a per-channel
     gain is the cheapest thing that reproduces that.
+
+    ``brightness`` takes either a fraction — ``0.3`` meaning ``x[0.7, 1.3]`` —
+    or an explicit ``(lo, hi)`` pair of multipliers. The pair exists because a
+    train/inference gap has a *direction*: training on the sunlit 0910
+    recordings and running under the curtained 0911 conditions asks for x0.66
+    on the bed-back camera and nothing above x1.11, so a symmetric range wide
+    enough to reach 0.66 also opens 1.34 — pushing the brightest training
+    episodes towards saturation for nothing.
     """
 
-    def __init__(self, brightness: float = 0.3, contrast: float = 0.3,
+    def __init__(self, brightness=0.3, contrast: float = 0.3,
                  saturation: float = 0.3, channel_gain: float = 0.12):
         super().__init__()
-        self.brightness = float(brightness)
+        self.brightness = (float(brightness) if np.isscalar(brightness)
+                           else tuple(float(v) for v in brightness))
         self.contrast = float(contrast)
         self.saturation = float(saturation)
         self.channel_gain = float(channel_gain)
@@ -70,13 +80,20 @@ class PhotometricJitter(nn.Module):
         return (f"brightness={self.brightness}, contrast={self.contrast}, "
                 f"saturation={self.saturation}, channel_gain={self.channel_gain}")
 
-    def _u(self, n: int, amount: float, x: torch.Tensor,
+    def _u(self, n: int, amount, x: torch.Tensor,
            gen: Optional[torch.Generator]) -> torch.Tensor:
-        """``[N, 1, 1, 1]`` multipliers drawn in ``[1 - amount, 1 + amount]``."""
-        if amount <= 0:
-            return torch.ones(n, 1, 1, 1, device=x.device, dtype=x.dtype)
+        """``[N, 1, 1, 1]`` multipliers, uniform over the declared range.
+
+        A scalar ``a`` means ``[1 - a, 1 + a]``; a pair is taken as it is.
+        """
+        if np.isscalar(amount):
+            if amount <= 0:
+                return torch.ones(n, 1, 1, 1, device=x.device, dtype=x.dtype)
+            lo, hi = 1.0 - float(amount), 1.0 + float(amount)
+        else:
+            lo, hi = (float(v) for v in amount)
         r = torch.rand(n, 1, 1, 1, device=x.device, dtype=x.dtype, generator=gen)
-        return 1.0 + (2.0 * r - 1.0) * amount
+        return lo + (hi - lo) * r
 
     def forward(self, x: torch.Tensor,
                 generator: Optional[torch.Generator] = None) -> torch.Tensor:
@@ -85,7 +102,8 @@ class PhotometricJitter(nn.Module):
         n = x.shape[0]
         luma = torch.tensor(_LUMA, device=x.device, dtype=x.dtype).view(1, 3, 1, 1)
 
-        x = x * self._u(n, self.brightness, x, generator)
+        if self.brightness != 0:
+            x = x * self._u(n, self.brightness, x, generator)
         if self.contrast > 0:
             mean = (x * luma).sum(1, keepdim=True).mean((2, 3), keepdim=True)
             x = mean + (x - mean) * self._u(n, self.contrast, x, generator)

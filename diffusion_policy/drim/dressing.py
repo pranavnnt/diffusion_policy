@@ -264,14 +264,29 @@ ROIS: Dict[str, Dict[str, Tuple[int, int, int, int]]] = {
 #: shortcut (d' 2.2 -> 0.78) rather than only moving the box around.
 ROI = ROI_CUSTOM_0911_2
 
-#: The bed-front camera faces a window.  Between-episode brightness std is 6.7
-#: against 2.5 within one, and the colour shifts with it (R sits ~10 below G/B,
-#: by a margin that tracks the level).  Cropping does not fix this: measured
-#: inside every ROI candidate the between-episode spread is unchanged at ~6.2-6.6,
-#: and the hand is the *brightest* part of the scene because it sits by the
-#: window.  Five episodes from one session already show it, and with every
-#: episode a success nothing in the data discourages keying on it.
-PHOTOMETRIC = dict(brightness=0.3, contrast=0.3, saturation=0.3,
+#: Photometric augmentation, and the brightness range is **asymmetric on
+#: purpose**.
+#:
+#: Measured inside the current ROI, per episode: the 0910 recordings sit at
+#: 100.8 (bed-front) and 97.8 (bed-back) while the curtained 0911 conditions
+#: the robot now runs under sit at 91.2 and 64.1. Training on 0910 and
+#: deploying at 0911 therefore asks for a multiplier down to **x0.66** on the
+#: back camera, and never more than x1.11. The old symmetric 0.3 reached only
+#: x0.70, so inference was outside the training distribution; widening it
+#: symmetrically to x[0.5, 1.5] would cover the gap but also stretch the
+#: brightest 0910 episodes (155.8) to 234 and clip.
+#:
+#: This range belongs to *this* pairing and should not be carried forward. A
+#: run trained on 0911 has no such gap — those recordings vary by 0.81 / 1.34
+#: between episodes against 0910's 10.37 — so its augmentation is protecting
+#: against future drift, not closing a measured shift, and wants re-deciding
+#: rather than inheriting.
+#:
+#: The bed-front camera faces a window, which is what the per-channel gain is
+#: for: brightness and contrast move all three channels together, daylight
+#: moves them apart. In 0910 the red channel sits ~10 below green and blue by a
+#: margin that tracks the level.
+PHOTOMETRIC = dict(brightness=(0.55, 1.25), contrast=0.3, saturation=0.3,
                    channel_gain=0.12)
 
 #: Channels left out of the observation although the rig records them.

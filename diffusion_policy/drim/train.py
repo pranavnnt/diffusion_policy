@@ -78,6 +78,28 @@ FAST_FRAC_DEFAULT = 0.15
 FAST_FRAC_CAP = 0.30
 
 
+def run_name(prof: Dict[str, Any], epochs: Dict[str, int], a) -> str:
+    """A directory name that says which run this was without opening it.
+
+    Every part of it is something that has actually been varied in this project
+    and that changes what the numbers mean, so two runs cannot be told apart by
+    their timestamps alone: how many cameras, at what input size, which crop,
+    which target, how long each stage ran, and whether the encoder started from
+    scratch. The timestamp goes last so a sort groups the comparable runs.
+    """
+    cams = prof.get("cameras") or ()
+    hw = prof.get("image_size") or (0, 0)
+    roi = a.roi if a.profile == "dressing" else "none"
+    vis = "scratch" if not a.vision_weights else str(a.vision_weights).lower()
+    ep = "-".join(str(epochs[k]) for k in ("dyn", "B0", "B1", "D2"))
+    bits = [f"{len(cams)}cam", f"{hw[0]}x{hw[1]}", f"roi-{roi}",
+            str(prof.get("action_mode", "absolute")).replace("_", "-"),
+            vis, f"e{ep}", f"s{a.seed}", time.strftime("%Y%m%d-%H%M%S")]
+    if a.keep:
+        bits.insert(4, "keep-" + a.keep.replace(",", "+"))
+    return "drim_" + "_".join(bits)
+
+
 def _ablate(excluded: Sequence[str], keep: str) -> Tuple[str, ...]:
     """The profile's exclusions minus anything ``--keep`` puts back."""
     back = {k.strip() for k in keep.split(",") if k.strip()}
@@ -1142,13 +1164,12 @@ def main(argv=None) -> int:
                                          a.image_size.lower().split("x")))
     if a.layout != "profile":
         prof["layout"] = LAYOUTS[a.layout]
-    out = a.out or os.path.join(
-        "data", "outputs", "drim_" + time.strftime("%Y%m%d_%H%M%S"))
     ep = dict(BUDGETS[a.budget])
     for k, v in (("dyn", a.epochs_dyn), ("B0", a.epochs_b0),
                  ("B1", a.epochs_b1), ("D2", a.epochs_d2)):
         if v is not None:
             ep[k] = v
+    out = a.out or os.path.join("data", "outputs", run_name(prof, ep, a))
     if a.quick:
         #: Enough to exercise every stage and the exact-null check; far too few
         #: to mean anything, which is the point of a separate flag rather than a
