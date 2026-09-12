@@ -130,7 +130,8 @@ class DrimSpec:
             assert len(self.fast_limits) == self.act_dim, (
                 f"{len(self.fast_limits)} ceilings for {self.act_dim} channels")
             assert all(v >= 0 for v in self.fast_limits)
-        assert self.action_mode in ("absolute", "delta_ee_pos"), self.action_mode
+        assert self.action_mode in ("absolute", "delta_ee_pos",
+                                    "delta_action"), self.action_mode
         if self.act_scale is not None:
             assert len(self.act_scale) == self.act_dim, (
                 f"{len(self.act_scale)} scales for {self.act_dim} channels")

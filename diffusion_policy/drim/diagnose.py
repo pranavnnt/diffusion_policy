@@ -99,9 +99,13 @@ def rollout(model, dyn: DY.FrozenDynamics, mods, eps, norm, spec: DrimSpec,
         ep = eps.episodes[j]
         y = torch.as_tensor(ep["dyn"][s0:s0 + 1], dtype=torch.float32, device=device)
         chunk = None
+        anchor_t = s0
         for k in range(n_steps):
             t = s0 + k
             if k % spec.exec_horizon == 0:
+                #: the step this chunk is planned at; ``delta_action`` targets
+                #: are relative to the centroid here, not to each step's own
+                anchor_t = t
                 #: replan.  Vision is the demonstration's — see the module note.
                 fr = [max(t + spec.slow_offsets[0], 0), t]
                 rgb = ({c: torch.as_tensor(ep[c][fr][None], device=device)
@@ -147,6 +151,14 @@ def rollout(model, dyn: DY.FrozenDynamics, mods, eps, norm, spec: DrimSpec,
             #: floor, which used the absolute action all along, stays flat.
             if spec.action_mode == "delta_ee_pos" and ee is not None:
                 a_raw = a_raw + y[:, ee[0]:ee[1]]
+            elif spec.action_mode == "delta_action":
+                #: anchored on the demonstrated centroid at the replan, which
+                #: is this rollout's stand-in for the controller state the robot
+                #: would hold. Teacher-forced like the vision above, so it is
+                #: optimistic about the closed loop in the same way.
+                a_raw = a_raw + torch.as_tensor(
+                    ep["action"][anchor_t:anchor_t + 1][:, chans],
+                    dtype=torch.float32, device=device)
             if use_demo_actions:
                 a_raw = torch.as_tensor(ep["action"][t:t + 1][:, chans],
                                         dtype=torch.float32, device=device)
@@ -172,6 +184,8 @@ def rollout(model, dyn: DY.FrozenDynamics, mods, eps, norm, spec: DrimSpec,
             demo_t = ep["action"][t:t + 1][:, chans]
             if spec.action_mode == "delta_ee_pos" and ee is not None:
                 demo_t = demo_t - ep["dyn"][t:t + 1, ee[0]:ee[1]]
+            elif spec.action_mode == "delta_action":
+                demo_t = demo_t - ep["action"][anchor_t:anchor_t + 1][:, chans]
             adiv[i, k] = float((a_norm - torch.as_tensor(
                 norm.apply_vec("target", demo_t),
                 device=device)).norm(dim=-1).item())

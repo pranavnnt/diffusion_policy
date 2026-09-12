@@ -78,6 +78,16 @@ FAST_FRAC_DEFAULT = 0.15
 FAST_FRAC_CAP = 0.30
 
 
+def _ablate(excluded: Sequence[str], keep: str) -> Tuple[str, ...]:
+    """The profile's exclusions minus anything ``--keep`` puts back."""
+    back = {k.strip() for k in keep.split(",") if k.strip()}
+    unknown = sorted(back - set(excluded))
+    assert not unknown, (
+        f"--keep names field(s) the profile does not exclude: {unknown}; "
+        f"it excludes {sorted(excluded)}")
+    return tuple(f for f in excluded if f not in back)
+
+
 def _parse_frac(given: str, profile_default=None):
     """``--fast-frac`` as 'auto', one number, or one per channel.
 
@@ -687,6 +697,7 @@ def run(zarr_path: Any, out_dir: str, seed: int = 0,
         fast_frac: Any = "auto",
         require: Sequence[str] = (), action_key: str = "action",
         action_mode: str = "absolute", exo_key: Optional[str] = None,
+        exclude: Sequence[str] = (),
         act_scale_per_arm: Optional[Sequence[float]] = None,
         act_per_arm: Optional[int] = None,
         roi: Optional[Dict[str, Any]] = None,
@@ -725,10 +736,14 @@ def run(zarr_path: Any, out_dir: str, seed: int = 0,
         val_ratio=val_ratio, seed=seed, require=require,
         action_key=action_key, image_size=image_size, exo_key=exo_key,
         act_scale_per_arm=act_scale_per_arm, act_per_arm=act_per_arm, roi=roi,
+        exclude=exclude,
         spec_kw=dict(action_mode=action_mode, **(horizons or {})))
 
     res = eps.resolution
     log(f"[fields] usable: {', '.join(res.usable) or '(none)'}")
+    if exclude:
+        log(f"[fields] excluded by configuration: {', '.join(exclude)}"
+            f"   (--keep puts any of them back)")
     for st in res.missing():
         log(f"[fields] MISSING {st.arm}.{st.name}: {st.reason}")
     act = eps.action_report(spec.act_channels)
@@ -803,6 +818,8 @@ def run(zarr_path: Any, out_dir: str, seed: int = 0,
         "stores": list(eps.zarr_paths), "episode_source": list(eps.episode_source),
         "n_train_chunks": int(len(tr["target"])),
         "n_valid_chunks": int(len(va["target"])),
+        #: what was left out on purpose, so a run says which ablation it is
+        "excluded": list(exclude),
         "fields": {"usable": list(res.usable),
                    "missing": [{"arm": s.arm, "field": s.name,
                                 "reason": s.reason} for s in res.missing()],
@@ -1034,7 +1051,7 @@ def main(argv=None) -> int:
                          "delta-pose action and the zigzag primitive as a "
                          "dynamics input. 'none' leaves the core defaults, "
                          "which know about no particular robot.")
-    ap.add_argument("--roi", default="custom43", choices=sorted(DRESS.ROIS),
+    ap.add_argument("--roi", default="custom", choices=sorted(DRESS.ROIS),
                     help="field of view to crop to before resizing. custom43 "
                          "(default) is the hand-drawn box at the encoder's 3:4 "
                          "aspect; custom is the same box undistorted-by-nothing "
@@ -1065,6 +1082,11 @@ def main(argv=None) -> int:
                     help="a command injected at both teleop and inference that "
                          "the policy does not predict; it conditions the "
                          "dynamics. Empty to disable.")
+    ap.add_argument("--keep", default="",
+                    help="comma-separated fields to put back into the "
+                         "observation that the profile excludes, e.g. "
+                         "--keep q,dq. The run logs what it excluded either "
+                         "way, so an ablation is a flag and not an edit.")
     ap.add_argument("--require", default="",
                     help="comma-separated fields that must resolve, e.g. "
                          "'wrench' to refuse a dataset without a contact signal")
@@ -1141,6 +1163,7 @@ def main(argv=None) -> int:
         require=tuple(r for r in a.require.split(",") if r),
         action_key=a.action_key,
         action_mode=prof.pop("action_mode", "absolute"),
+        exclude=_ablate(prof.pop("exclude", ()), a.keep),
         exo_key=prof.pop("exo_key", None),
         image_size=prof.pop("image_size", None),
         act_scale_per_arm=prof.pop("act_scale_per_arm", None),

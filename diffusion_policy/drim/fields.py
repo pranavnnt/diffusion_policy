@@ -49,11 +49,19 @@ class Field:
     aliases: Tuple[str, ...] = ()
     #: what degrades when this field is absent, in one line, shown in the warning
     needed_for: str = ""
+
     #: fields carrying the same physical quantity in another form.  When two of
     #: them resolve, the one declared **earlier** in :data:`ARM_FIELDS` wins and
     #: the other is dropped with a note — keeping both would count the same
     #: measurement twice and quietly widen the state vector.
     conflicts: Tuple[str, ...] = ()
+    #: ``(source field name, lo, hi)`` — take this field from a slice of another
+    #: recorded array when it is not published under its own name.  The rig
+    #: publishes ``ee_twist`` as one 6-vector and never ``ee_lin_vel``; without
+    #: this the only way to read the linear half is to take the angular half
+    #: with it, and that half is identically zero on every step of all 119
+    #: episodes.
+    slice_of: Optional[Tuple[str, int, int]] = None
 
 
 #: The per-arm quantities **this rig** can publish.  The machinery around it —
@@ -74,7 +82,7 @@ ARM_FIELDS: Tuple[Field, ...] = (
           "task-space orientation, and the rotation relating the wrench frames"),
     Field("ee_lin_vel", 3, "linear", "prop", ("eef_lin_vel", "ee_linear_velocity"),
           "task-space velocity the corrector reacts to",
-          conflicts=("ee_twist",)),
+          conflicts=("ee_twist",), slice_of=("ee_twist", 0, 3)),
     Field("ee_ang_vel", 3, "linear", "prop", ("eef_ang_vel", "ee_angular_velocity"),
           "task-space angular velocity", conflicts=("ee_twist",)),
     #: The same six numbers as ``ee_lin_vel`` + ``ee_ang_vel``, as one array.
@@ -210,8 +218,8 @@ class Resolution:
         return "\n".join(rows)
 
 
-def _lookup(source: Dict[str, Any], arm: int, f: Field, n_arms: int
-            ) -> Optional[np.ndarray]:
+def _lookup(source: Dict[str, Any], arm: int, f: Field, n_arms: int,
+            allow_slice: bool = False) -> Optional[np.ndarray]:
     """One array per field, under any of the spellings the field declares."""
     a = arm_name(arm)
     names = (f.name,) + f.aliases
@@ -221,6 +229,11 @@ def _lookup(source: Dict[str, Any], arm: int, f: Field, n_arms: int
     for c in candidates:
         if c in source:
             return np.asarray(source[c], dtype=np.float32)
+    if allow_slice and f.slice_of is not None:
+        src, lo, hi = f.slice_of
+        for c in ([f"{a}_{src}", f"{src}_{a}"] + ([src] if n_arms == 1 else [])):
+            if c in source:
+                return np.asarray(source[c], dtype=np.float32)[:, lo:hi]
     return None
 
 
@@ -262,13 +275,25 @@ def _check(a: np.ndarray, f: Field, arm: str) -> FieldStatus:
 def resolve(source: Dict[str, Any], n_arms: int = 2,
             layout: Optional[PackedLayout] = None,
             require: Sequence[str] = (),
+            exclude: Sequence[str] = (),
             warn: bool = True) -> Resolution:
     """Match a dataset against :data:`ARM_FIELDS` and account for every field.
 
     ``require`` names fields that must resolve; anything listed there and absent
     raises instead of warning, which is how a training run declares "this stage
     is meaningless without a wrench" rather than discovering it in the numbers.
+
+    ``exclude`` names fields to leave out although they *are* recorded, so an
+    ablation is a flag rather than an edit.  They are reported as excluded
+    rather than missing: a channel dropped on purpose and a channel the rig
+    never published are different facts and the field report has to keep them
+    apart.
     """
+    exclude = tuple(exclude)
+    unknown = [n for n in exclude if n not in FIELDS_BY_NAME]
+    assert not unknown, f"exclude names no such field(s): {unknown}"
+    both = sorted(set(exclude) & set(require))
+    assert not both, f"field(s) both required and excluded: {both}"
     if layout is not None:
         layout.validate()
     arrays: Dict[str, np.ndarray] = {}
@@ -276,9 +301,21 @@ def resolve(source: Dict[str, Any], n_arms: int = 2,
     for a in range(n_arms):
         an = arm_name(a)
         for f in ARM_FIELDS:
-            raw = _lookup(source, a, f, n_arms)
+            #: The slice fallback fires only when the field it would carve out
+            #: of has been excluded.  Otherwise a rig that publishes a combined
+            #: ``ee_twist`` would suddenly resolve as the split pair, changing
+            #: ``prop_fields`` for every existing run — the derivation exists to
+            #: keep the half worth having when the other half is dropped, not
+            #: to re-describe a dataset nobody asked to change.
+            raw = _lookup(source, a, f, n_arms,
+                          allow_slice=(f.slice_of is not None
+                                       and f.slice_of[0] in exclude))
             if raw is None:
                 raw = _from_packed(source, a, f, layout)
+            if f.name in exclude:
+                statuses.append(FieldStatus(
+                    f.name, an, False, reason="excluded by configuration"))
+                continue
             if raw is None:
                 statuses.append(FieldStatus(f.name, an, False, reason="not recorded"))
                 continue

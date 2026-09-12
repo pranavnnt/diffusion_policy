@@ -152,7 +152,8 @@ class DrimEpisodes:
     def __init__(self, zarr_path: Any, cameras: Sequence[str] = (),
                  n_arms: int = 2, layout: Optional[F.PackedLayout] = None,
                  action_key: str = "action", time_key: str = "timestamp",
-                 require: Sequence[str] = (), warn: bool = True,
+                 require: Sequence[str] = (), exclude: Sequence[str] = (),
+                 warn: bool = True,
                  image_size: Optional[Tuple[int, int]] = None,
                  exo_key: Optional[str] = None,
                  roi: Optional[Dict[str, Tuple[int, int, int, int]]] = None):
@@ -174,7 +175,8 @@ class DrimEpisodes:
             rb = ReplayBuffer.create_from_path(path, mode="r")
             src = {k: rb[k] for k in rb.keys()}
             resolutions.append(F.resolve(src, n_arms=n_arms, layout=layout,
-                                         require=require, warn=warn))
+                                         require=require, exclude=exclude,
+                                         warn=warn))
             buffers.append(rb)
 
         arms = tuple(sorted(set.intersection(
@@ -419,6 +421,25 @@ def build_chunks(eps: DrimEpisodes, spec: DrimSpec, indices: Sequence[int]
                 #: relative to the pose at the step it executes on, which is
                 #: observed at inference time
                 tgt = tgt - y[s:s + H, ee[0]:ee[1]]
+            elif spec.action_mode == "delta_action":
+                #: the recorded action's own displacement over the chunk.
+                #:
+                #: ``action`` here is the operator's *centroid*, integrated from
+                #: the joystick, so this is the operator's contribution and
+                #: nothing else.  ``delta_ee_pos`` looks similar and is not: it
+                #: subtracts the measured pose, which gives the controller's
+                #: standing tracking lag — a quantity that says how far behind
+                #: the arm is, not where to go.  Measured over all 119 episodes
+                #: that lag explains 0.0 % / 0.5 % / 4.2 % of the centroid's
+                #: velocity and points the *opposite* way on y and z (offset
+                #: +5.78 mm against -4.92 mm/s), so driving a servo with it
+                #: moves the arm backwards on the axis that carries the task.
+                #:
+                #: ``tgt[0]`` is identically zero, which also collapses the
+                #: copycat baseline onto predict-zero: holding the first value
+                #: *is* predicting no motion, so the two trivial baselines stop
+                #: being separate things to clear.
+                tgt = tgt - a[s][chans]
             out["target"].append(tgt)
             for cam in spec.cameras:
                 out[f"rgb2_{cam}"].append(ep[cam][frames])
@@ -570,6 +591,7 @@ def load_split(zarr_path: str, cameras: Sequence[str] = (), n_arms: int = 2,
                image_size: Optional[Tuple[int, int]] = None,
                exo_key: Optional[str] = None,
                roi: Optional[Dict[str, Tuple[int, int, int, int]]] = None,
+               exclude: Sequence[str] = (),
                act_scale_per_arm: Optional[Sequence[float]] = None,
                act_per_arm: Optional[int] = None, **kw
                ) -> Tuple[Dict[str, np.ndarray], Dict[str, np.ndarray],
@@ -577,7 +599,7 @@ def load_split(zarr_path: str, cameras: Sequence[str] = (), n_arms: int = 2,
     """Resolve the dataset, derive the spec from it, and cut it into chunks."""
     eps = DrimEpisodes(zarr_path, cameras=cameras, n_arms=n_arms, layout=layout,
                        require=require, image_size=image_size,
-                       exo_key=exo_key, roi=roi, **kw)
+                       exo_key=exo_key, roi=roi, exclude=exclude, **kw)
     spec_kw = dict(spec_kw or {})
     native = eps.native_image_size()
     if native is not None:
@@ -596,11 +618,20 @@ def load_split(zarr_path: str, cameras: Sequence[str] = (), n_arms: int = 2,
     #: physically-sized scale and silently fell back to this dataset's own
     #: range, which is exactly the comparability the scale exists to provide.
     rng_act = all_act
-    if spec_kw.get("action_mode") == "delta_ee_pos":
+    _mode = spec_kw.get("action_mode")
+    if _mode == "delta_ee_pos":
         _ee = ee_pos_slice(eps.resolution, eps.resolution.prop_names())
         if _ee is not None and all_act.shape[-1] == _ee[1] - _ee[0]:
             rng_act = np.concatenate(
                 [e["action"] - e["prop"][:, _ee[0]:_ee[1]] for e in eps.episodes])
+    elif _mode == "delta_action":
+        #: the largest displacement a chunk can ask for, which is what the
+        #: sampler's [-1, 1] has to be able to reach
+        _H = int(spec_kw.get("pred_horizon", 16))
+        rng_act = np.concatenate(
+            [e["action"][i:i + _H] - e["action"][i]
+             for e in eps.episodes for i in range(max(len(e["action"]) - _H + 1, 0))]
+            or [np.zeros((1, all_act.shape[-1]), np.float32)])
     spec = from_resolution(eps.resolution, cameras=cameras,
                            act_width=all_act.shape[-1],
                            n_declared=eps.n_declared,

@@ -401,8 +401,17 @@ def main() -> int:
         print(f"Experimental sampler override: {original_flow_steps} -> "
               f"{runner.model.slow.n_flow_steps} flow steps", flush=True)
     sp = runner.spec
-    if sp.action_mode != "delta_ee_pos":
-        raise RuntimeError(f"this adapter is for delta_ee_pos checkpoints, got {sp.action_mode}")
+    if sp.action_mode not in ("delta_ee_pos", "delta_action"):
+        raise RuntimeError(
+            f"this adapter takes delta_ee_pos or delta_action checkpoints, "
+            f"got {sp.action_mode}")
+    if sp.action_mode == "delta_ee_pos":
+        print("WARNING: delta_ee_pos predicts the controller's standing lag, "
+              "not a motion command. Measured over 119 episodes it explains "
+              "0.0/0.5/4.2 % of the centroid's velocity and points the "
+              "opposite way on y and z, so a servo driven by it moves the arm "
+              "backwards on the axis that carries the task. delta_action "
+              "checkpoints do not have this problem.", flush=True)
     if tuple(sp.cameras) != ("image_bed_front", "image_bed_back"):
         raise RuntimeError(f"unexpected camera contract {sp.cameras}")
     if sp.act_dim != 3 or sp.exo_dim != 6:
@@ -528,6 +537,10 @@ def main() -> int:
                 held_centroid = obs.ee_pos.copy()
             if controlled_centroid is None:
                 controlled_centroid = obs.ee_pos.copy()
+            #: ``delta_action`` targets are displacements from the centroid the
+            #: chunk was planned at, and the centroid is a controller state —
+            #: nothing on the robot reports it, so it is handed over explicitly.
+            obs.centroid = controlled_centroid.copy()
             inference_start = time.monotonic()
             target = runner.step(
                 obs, target_transform=lambda raw: held_centroid + axis_mask *

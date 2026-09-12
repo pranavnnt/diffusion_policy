@@ -819,22 +819,39 @@ def test_the_hand_drawn_boxes_are_registered():
     assert D.ROIS["custom43"] is D.ROI_CUSTOM_43
 
 
-def test_the_43_variant_actually_matches_the_encoder_aspect():
-    """Anything else is resized anisotropically, differently per camera."""
+def test_the_43_variant_is_3_to_4_and_is_now_legacy():
+    """It was built to match a 240x320 encoder, which is no longer the size.
+
+    Pinned against the literal 0.75 rather than against ``IMAGE_SIZE``: the
+    claim is about what that box *is*, and tying it to a constant that has
+    since moved is what made this test fail for the wrong reason.
+    """
     from diffusion_policy.drim import dressing as D
-    want = D.IMAGE_SIZE[1] / D.IMAGE_SIZE[0]
     for cam, (_, _, h, w) in D.ROI_CUSTOM_43.items():
-        assert abs(w / h - want) < 0.01, cam
-    #: and the hand-drawn originals are not, which is why both are kept
-    assert any(abs(w / h - want) > 0.05
-               for _, _, h, w in D.ROI_CUSTOM.values())
+        assert abs(w / h - 320 / 240) < 0.01, cam
+    assert D.ROI is not D.ROI_CUSTOM_43, "the 3:4 boxes are not the default"
 
 
-def test_the_mid_roi_needs_no_resampling():
-    """It is exactly the encoder's input size, so no interpolation happens."""
+def test_the_default_roi_downsamples_on_every_axis():
+    """The property that actually matters at the current encoder input.
+
+    A box wider than the input upsamples along that axis, which manufactures
+    columns by interpolation — compute spent on nothing — and does it in the
+    same frame where the other axis is discarding real rows. Every axis of the
+    default must scale at or below 1.0.
+    """
     from diffusion_policy.drim import dressing as D
-    for cam, (_, _, h, w) in D.ROI_MID.items():
-        assert (h, w) == D.IMAGE_SIZE, cam
+    H, W = D.IMAGE_SIZE
+    for cam, (_, _, h, w) in D.ROI.items():
+        assert H <= h, f"{cam}: {H} rows out of {h} upsamples vertically"
+        assert W <= w, f"{cam}: {W} cols out of {w} upsamples horizontally"
+
+
+def test_the_encoder_input_is_divisible_by_the_resnet_stride():
+    """resnet18 reduces by 32; an input that is not a multiple never lands."""
+    from diffusion_policy.drim import dressing as D
+    for v in D.IMAGE_SIZE:
+        assert v % 32 == 0, f"{D.IMAGE_SIZE} is not a multiple of 32"
 
 
 def test_roi_candidates_are_ordered_by_how_much_they_keep():
@@ -1400,3 +1417,65 @@ def test_inference_reports_when_the_message_window_is_full():
     assert pol.message_ready
     pol.reset()
     assert not pol.message_ready, "reset must not carry history across episodes"
+
+
+# --------------------------------------------------------------------------- #
+# 19. delta_action: the target is the operator's own displacement
+# --------------------------------------------------------------------------- #
+
+
+def test_delta_action_is_the_centroids_own_displacement(tmp_path):
+    """``a[t+i] - a[t]``, not ``a[t] - ee_pos[t]``.
+
+    The two look alike and are opposite in the way that matters. ``action`` is
+    the operator's centroid; subtracting the *measured pose* gives the
+    controller's standing tracking lag, which over all 119 episodes explains
+    0.0 / 0.5 / 4.2 % of the centroid's velocity and carries the **opposite
+    sign** on y and z (+5.78 mm of offset against -4.92 mm/s of motion). A
+    servo driven by that moves the arm backwards on the axis that carries the
+    task, which is how it failed on the robot. Subtracting the centroid at the
+    chunk start instead gives the displacement the operator actually commanded.
+    """
+    from diffusion_policy.drim.dataset import load_split, trivial_action_baselines
+    from diffusion_policy.drim import fields as FLD
+    layout = FLD.PackedLayout(
+        stride=14, slices={"q": (0, 7), "ee_pos": (7, 10), "ee_quat": (10, 14)})
+    n = 80
+    path = str(tmp_path / "d.zarr")
+    import zarr
+    g = zarr.open(path, "w")
+    state = np.zeros((n, 14), np.float32)
+    #: an arm that *leads* its commanded centroid, as the real one does
+    #: small enough that a 16-step chunk stays inside the declared 0.015 scale,
+    #: so the scale is used and a raw zero normalises to zero
+    march = np.linspace(0, -0.05, n).astype(np.float32)
+    state[:, 7] = 0.5 + march * 1.05
+    state[:, 10] = 1.0
+    g.create_dataset("data/state", data=state)
+    centroid = np.zeros((n, 3), np.float32)
+    centroid[:, 0] = 0.5 + march
+    g.create_dataset("data/action", data=centroid)
+    g.create_dataset("meta/episode_ends", data=np.array([n], np.int64))
+
+    kw = dict(cameras=(), n_arms=1, layout=layout, val_ratio=0.5, seed=0,
+              action_key="action", image_size=None, exo_key=None,
+              act_scale_per_arm=(0.015,)*3, act_per_arm=3, roi=None)
+    tr, _, _, _, spec = load_split(
+        [path], spec_kw=dict(action_mode="delta_action", pred_horizon=16,
+                             exec_horizon=8, message_window=32), **kw)
+    t = np.asarray(tr["target"])
+    assert spec.action_mode == "delta_action"
+    assert np.abs(t[:, 0]).max() < 1e-9, "the first step of a chunk must be zero"
+
+    #: it points where the centroid is going, which is what a servo needs
+    assert t[:, -1, 0].mean() < 0, "target must follow the centroid's -x march"
+
+    #: and the lag points the other way, which is why it cannot be the target
+    lag = centroid[:, 0] - state[:, 7]
+    vel = np.diff(centroid[:, 0])
+    assert lag.mean() > 0 > vel.mean(), (
+        "fixture must reproduce the sign inversion the real recordings show")
+
+    #: with target[0] == 0 the copycat and the do-nothing baseline are the same
+    b = trivial_action_baselines(tr, spec)
+    assert b["repeat_first_action"] == pytest.approx(b["predict_zero"])

@@ -73,6 +73,14 @@ class Observation:
     images: Dict[str, np.ndarray]  # {camera: (H, W, 3) uint8}, full frames
     zigzag_action: np.ndarray     # (6,)  the primitive, as commanded
     dt: float = 0.07
+    #: The controller's own centroid state, required by ``delta_action``.
+    #:
+    #: The target is a displacement from the centroid the chunk was planned at,
+    #: so something has to say where that was. It is not observable — the
+    #: centroid is a controller state, integrated from the velocity actually
+    #: sent, exactly as the collector integrated the joystick. ``real_robot``
+    #: already keeps it; pass it in.
+    centroid: Optional[np.ndarray] = None
 
     def prop(self, spec: DrimSpec) -> np.ndarray:
         parts = {"q": self.q, "dq": self.dq, "ee_pos": self.ee_pos,
@@ -153,6 +161,7 @@ class DrimRunner:
     _msg: Optional[torch.Tensor] = None
     _k: int = 0
     _prev: Optional[tuple] = None
+    _anchor: Optional[np.ndarray] = None
     #: Unmasked target from the network's current step.  Useful for live
     #: ablations that hold the robot on a fixed centroid while still showing
     #: what the policy would have requested.
@@ -223,6 +232,7 @@ class DrimRunner:
         self._chunk = self._feats = self._msg = None
         self._k = 0
         self._prev = None
+        self._anchor = None
         self.last_policy_target = None
         self.last_replanned = False
         self.last_chunk_index = 0
@@ -274,6 +284,12 @@ class DrimRunner:
         dyn_state = np.concatenate([prop, wr]) if sp.wrench_dim else prop
 
         self.last_replanned = (self._k % sp.exec_horizon == 0)
+        if self.last_replanned and sp.action_mode == "delta_action":
+            assert obs.centroid is not None, (
+                "delta_action needs Observation.centroid at every replan")
+            #: latched, not read per step: the whole chunk is relative to the
+            #: centroid it was planned at, which is what training subtracted
+            self._anchor = np.asarray(obs.centroid, np.float32).copy()
         if self.last_replanned:
             ctx = self._context()
             self._msg = self._message()
@@ -293,10 +309,26 @@ class DrimRunner:
         a_norm = torch.clamp(self._chunk[:, idx] + r, -1.0, 1.0)
         delta = self.norm.invert_vec("target", a_norm.cpu().numpy())[0]
 
-        #: the network's output is ``action - ee_pos``; the robot takes an
-        #: absolute pose, so the *measured* pose goes back on
-        target = (delta + np.asarray(obs.ee_pos, np.float32)
-                  if sp.action_mode == "delta_ee_pos" else delta)
+        #: Back to an absolute setpoint, by whichever anchor the target was
+        #: defined against during training.
+        #:
+        #: ``delta_action`` anchors on the centroid the chunk was planned at,
+        #: latched at replan above. ``delta_ee_pos`` anchored on the measured
+        #: pose, which is why it cannot drive a servo: that quantity is the
+        #: controller's standing lag, it explains 0.0 / 0.5 / 4.2 % of the
+        #: centroid's velocity, and on y and z it points the *opposite* way
+        #: (+5.78 mm of offset against -4.92 mm/s of motion). A servo fed with
+        #: it drives the arm backwards on the axis that carries the task.
+        if sp.action_mode == "delta_action":
+            assert self._anchor is not None, (
+                "delta_action needs Observation.centroid — the controller's "
+                "integrated centroid state, which is what the target is "
+                "relative to. It is not observable from the robot.")
+            target = delta + self._anchor
+        elif sp.action_mode == "delta_ee_pos":
+            target = delta + np.asarray(obs.ee_pos, np.float32)
+        else:
+            target = delta
         self.last_policy_target = target.astype(np.float32, copy=True)
         assert target_override is None or target_transform is None, (
             "use either target_override or target_transform, not both")
